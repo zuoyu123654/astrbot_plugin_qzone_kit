@@ -175,6 +175,12 @@ class QzoneKitPlugin(Star):
         self.post_crit_max_h = float(cfg.get("post_critical_max_hours", 29.2) or 29.2)
         # 可以调到几分钟，方便先试；正经用还是 45
         self.judge_minutes = max(1, int(cfg.get("judge_interval_minutes", 45) or 45))
+        # 只在「有新聊天」时才判断；间隔随机浮动，别像闹钟
+        self.judge_only_on_new = bool(cfg.get("judge_only_on_new", True))
+        try:
+            self.judge_jitter = max(0.0, min(0.8, float(cfg.get("judge_interval_jitter", 0.35))))
+        except (TypeError, ValueError):
+            self.judge_jitter = 0.35
         # 试运行：只判断、只记日志，不真的改签名也不真的发说说
         self.dry_run = bool(cfg.get("dry_run", False))
         # 表情包（可选）：默认关，使用者同意才开；开了才会去读 meme_manager 的图包
@@ -296,7 +302,7 @@ class QzoneKitPlugin(Star):
         self._flush_task = asyncio.create_task(self._flush_loop())
         logger.info(
             "[QzoneKit] 已启动：自动签名=%s（平时 %g~%g 天 / 重要 %g~%g 小时）、"
-            "自动说说=%s（平时 %g~%g 天 / 重要 %g~%g 小时）、判断间隔=%s 分钟",
+            "自动说说=%s（平时 %g~%g 天 / 重要 %g~%g 小时）、判断间隔≈%s 分钟%s",
             self.auto_signature,
             self.sig_min_days,
             self.sig_max_days,
@@ -308,6 +314,7 @@ class QzoneKitPlugin(Star):
             self.post_crit_min_h,
             self.post_crit_max_h,
             self.judge_minutes,
+            "（有新聊天才判断，±%d%% 浮动）" % int(self.judge_jitter * 100) if self.judge_only_on_new else "",
         )
         if self.read_plugin_state:
             try:
@@ -1307,7 +1314,18 @@ class QzoneKitPlugin(Star):
         try:
             if db.stat().st_size > 200 * 1024 * 1024:
                 return out
-            con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+            # WAL 库正被别的进程写：复制一份（含 -wal/-shm）再读，避免 locked
+            import shutil as _sh
+            import tempfile as _tf
+
+            tmpdir = Path(_tf.mkdtemp(prefix="qkit_db_"))
+            local = tmpdir / db.name
+            _sh.copy2(db, local)
+            for suffix in ("-wal", "-shm"):
+                side = Path(str(db) + suffix)
+                if side.is_file():
+                    _sh.copy2(side, Path(str(local) + suffix))
+            con = sqlite3.connect(str(local))
         except Exception:  # noqa: BLE001
             return out
         try:
@@ -1384,12 +1402,13 @@ class QzoneKitPlugin(Star):
             if len(out) >= 10:
                 break
 
-        # 7.x（companion_v2）：sqlite 存状态（可能在 companion-7/ 子目录里）
+        # 7.x（companion_v2）：sqlite 存状态（可能在 companion-7/installations/... 深层）
+        db_out: list[str] = []
         try:
-            for db in pdir.rglob("*.db"):
+            for db in list(pdir.rglob("*.db")) + list(pdir.rglob("*.sqlite")) + list(pdir.rglob("*.sqlite3")):
                 if db.is_file():
-                    out.extend(self._extract_sqlite_state(db))
-                    if len(out) >= 10:
+                    db_out.extend(self._extract_sqlite_state(db))
+                    if len(db_out) >= 8:
                         break
         except Exception:  # noqa: BLE001
             pass
@@ -1415,7 +1434,7 @@ class QzoneKitPlugin(Star):
                         out.append(f"当前互动={ci.get('label')}")
             except Exception:  # noqa: BLE001
                 pass
-        return out
+        return db_out + out
 
     def _scan_plugin_state(self) -> list[str]:
         """汇总所有状态来源；读不到就返回空，不影响判断。"""
@@ -1532,8 +1551,21 @@ class QzoneKitPlugin(Star):
         except json.JSONDecodeError:
             return None
 
+    def _has_new_chat(self) -> bool:
+        """上次判断之后有没有新的聊天；没有就不用叫模型。"""
+
+        recent = self.state.get("recent") or []
+        if not recent:
+            return False
+        last = float(self.state.get("last_judge") or 0)
+        latest = max(float(item.get("at") or 0) for item in recent[-10:])
+        return latest > last
+
     async def _judge_once(self) -> None:
         if self._busy:
+            return
+        if self.judge_only_on_new and not self._has_new_chat():
+            logger.debug("[QzoneKit] 没有新聊天，这轮不判断")
             return
         self._busy = True
         try:
@@ -1669,4 +1701,7 @@ class QzoneKitPlugin(Star):
                 await self._judge_once()
             except Exception as exc:  # noqa: BLE001
                 logger.warning("[QzoneKit] 判断循环出错：%s", exc)
-            await asyncio.sleep(self.judge_minutes * 60 + random.randint(0, 120))
+            base = self.judge_minutes * 60
+            span = base * self.judge_jitter
+            wait = max(60.0, base + random.uniform(-span, span))
+            await asyncio.sleep(wait)
