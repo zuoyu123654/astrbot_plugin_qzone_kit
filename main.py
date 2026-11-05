@@ -1192,7 +1192,8 @@ class QzoneKitPlugin(Star):
                 if not meta.is_file():
                     continue
                 # 目录名也得像「陪伴/记忆」类，避免把 B站记忆桥这种也扫进来
-                if not any(k in p.name.lower() for k in ("companion", "memory")):
+                lname = p.name.lower()
+                if not any(k in lname for k in self.STATE_NAME_HINTS):
                     continue
                 text = meta.read_text(encoding="utf-8", errors="ignore").lower()
                 if any(k.lower() in text for k in keywords):
@@ -1205,33 +1206,46 @@ class QzoneKitPlugin(Star):
             for d in data_dir.iterdir():
                 if not d.is_dir():
                     continue
-                if (d / "companions.json").is_file() or any(
-                    d.glob("*relationship_phase.json")
-                ):
+                if any(k in d.name.lower() for k in self.STATE_NAME_HINTS) or (
+                    d / "companions.json"
+                ).is_file():
                     add(d)
         except Exception:  # noqa: BLE001
             pass
         return picked
 
-    # 陪伴面板 = companions.json 的顶层分区（按面板上的栏目取）
-    PANEL_KEYS = (
-        ("daily_state", "今日状态"),
-        ("state_conditions", "状态条件"),
-        ("body_cycle_state", "身体/精力"),
-        ("current_interaction", "当前互动"),
-        ("daily_story_plan", "当前片段"),
-        ("personal_goal_state", "个人目标"),
-        ("daily_weather", "天气"),
-        ("qweather_location", "位置"),
-        ("bot_diaries", "日记碎片"),
-        ("dream_fragments", "梦境碎片"),
-        ("daily_dream", "昨晚梦境"),
-        ("persona_lifecycle", "扮演状态"),
-        ("unified_person", "统一人格"),
+    # 「像状态」的线索词：不写死字段名，插件改名换字段也能命中
+    STATE_HINTS = (
+        "state", "status", "mood", "emotion", "feel", "energy", "sleep", "tired",
+        "dream", "diary", "goal", "plan", "story", "segment", "weather", "place",
+        "location", "relation", "interaction", "intimacy", "affection", "outfit",
+        "body", "health", "cycle", "agenda", "window", "activity", "presence",
+        "状态", "心情", "情绪", "精力", "睡", "梦", "日记", "目标", "计划", "片段",
+        "天气", "位置", "关系", "互动", "亲密", "好感", "身体", "健康", "穿搭", "日程",
     )
+    STATE_NAME_HINTS = ("companion", "companions", "memory", "陪伴", "陪着你", "记住你")
+
+    # 当天「活」的状态优先（面板上真正在变的那几栏）
+    LIVE_KEYS = ("daily_state", "state_conditions", "body_cycle_state",
+                 "current_interaction", "daily_weather", "daily_story_plan",
+                 "personal_goal_state", "daily_dream", "bot_diaries",
+                 "dream_fragments", "qweather_location", "persona_lifecycle",
+                 "qq_presence_state", "unified_person")
+    NOISE_KEYS = ("history", "backup", "log", "audit", "cache", "candidate",
+                  "pool", "template", "revision", "failed", "pending", "_at",
+                  "generated_at", "timestamp")
+
+    def _state_score(self, key: str) -> int:
+        lk = str(key).lower()
+        sc = sum(1 for h in self.STATE_HINTS if h in lk) * 2
+        if lk in self.LIVE_KEYS or any(lk.startswith(k) for k in self.LIVE_KEYS):
+            sc += 6
+        if any(n in lk for n in self.NOISE_KEYS):
+            sc -= 5
+        return sc
 
     def _flatten(self, obj, prefix: str = "", depth: int = 0) -> list[str]:
-        """把一段状态拍平成「a.b=值」；只取短标量，最多两层。"""
+        """拍平成 a.b=值（只收短标量，最多两层）。"""
 
         out: list[str] = []
         if depth > 1:
@@ -1246,82 +1260,90 @@ class QzoneKitPlugin(Star):
                 elif isinstance(v, (dict, list)):
                     out.extend(self._flatten(v, key, depth + 1))
         elif isinstance(obj, list):
-            for i, v in enumerate(obj[:3]):
+            for i, v in enumerate(obj[:2]):
                 out.extend(self._flatten(v, f"{prefix}[{i}]", depth + 1))
         return out
 
-    def _extract_panel_state(self, comp: Path) -> list[str]:
-        """从 companions.json 按「陪伴面板」的栏目读状态。"""
+    def _extract_json_state(self, fp: Path) -> list[str]:
+        """从任意一个 json 里，按「key 像不像状态」挑内容。"""
 
         try:
-            data = json.loads(comp.read_text(encoding="utf-8", errors="ignore"))
+            if fp.stat().st_size > 3 * 1024 * 1024:
+                return []
+            data = json.loads(fp.read_text(encoding="utf-8", errors="ignore"))
         except Exception:  # noqa: BLE001
             return []
+        if not isinstance(data, dict):
+            return []
+
+        scored = []
+        for k, v in data.items():
+            if not isinstance(v, (dict, list)):
+                continue
+            sc = self._state_score(k)
+            if sc <= 0 or not v:
+                continue
+            lk = str(k).lower()
+            if any(n in lk for n in self.NOISE_KEYS):
+                continue
+            scored.append((sc, str(k), v))
+        scored.sort(key=lambda x: -x[0])
+
         out: list[str] = []
-        for key, label in self.PANEL_KEYS:
-            block = data.get(key)
-            if not block:
-                continue
+        for _sc, key, block in scored[:6]:
             flat = self._flatten(block)
-            if not flat:
-                continue
-            picked = "；".join(flat[:4])[:150]
-            out.append(f"{label}: {picked}")
-            if len(out) >= 8:
+            if flat:
+                out.append(f"{key}: " + "；".join(flat[:3])[:120])
+            if len(out) >= 6:
                 break
         return out
 
     def _extract_dir_state(self, pdir: Path) -> list[str]:
-        """从一个插件的 plugin_data 目录里定向读状态。"""
+        """从一个插件的 plugin_data 目录里读状态（不挑文件名，版本无关）。"""
 
         out: list[str] = []
+        candidates: list[Path] = []
+        try:
+            candidates = [
+                f
+                for f in pdir.rglob("*.json")
+                if f.is_file() and f.stat().st_size <= 3 * 1024 * 1024
+            ]
+        except Exception:  # noqa: BLE001
+            candidates = []
 
-        # ① 「我会永远陪着你」这类：companions.json
+        # 排序：文件名像状态的排前面
+        candidates.sort(key=lambda f: -self._state_score(f.stem))
+
+        for fp in candidates[:12]:
+            try:
+                got = self._extract_json_state(fp)
+            except Exception:  # noqa: BLE001
+                got = []
+            if got:
+                out.extend(f"[{fp.stem}] {g}" for g in got)
+            if len(out) >= 10:
+                break
+
+        # 兼容老结构：关系角色/互动状态这类「人」的数据
         comp = pdir / "companions.json"
         if comp.is_file():
-            try:
-                out.extend(self._extract_panel_state(comp))
-            except Exception:  # noqa: BLE001
-                pass
             try:
                 data = json.loads(comp.read_text(encoding="utf-8", errors="ignore"))
                 users = data.get("users") or {}
                 rec = None
-                for _uid, item in users.items():
+                for _u, item in users.items():
                     if isinstance(item, dict) and str(item.get("relationship_role") or "") == "owner":
                         rec = item
                         break
                 if rec is None and users:
                     rec = next((v for v in users.values() if isinstance(v, dict)), None)
                 if isinstance(rec, dict):
-                    role = rec.get("relationship_role")
-                    mode = rec.get("relationship_mode")
-                    if role:
-                        out.append(f"关系={role}" + (f"/{mode}" if mode else ""))
+                    if rec.get("relationship_role"):
+                        out.append(f"关系={rec.get('relationship_role')}/{rec.get('relationship_mode', '')}")
                     ci = rec.get("current_interaction") or {}
                     if isinstance(ci, dict) and ci.get("label"):
-                        out.append(f"互动状态={ci.get('label')}({ci.get('expression_band', '')})")
-                    dt = rec.get("relationship_daily_totals") or {}
-                    if isinstance(dt, dict) and dt:
-                        out.append(f"今日互动 正{dt.get('positive', 0)}/负{dt.get('negative', 0)}")
-                    emo = rec.get("last_emotion_event") or {}
-                    if isinstance(emo, dict) and emo:
-                        label = emo.get("label") or emo.get("emotion") or emo.get("type")
-                        if label:
-                            out.append(f"最近情绪={label}")
-            except Exception:  # noqa: BLE001
-                pass
-
-        # ② 「我会牢牢记住你」这类：*relationship_phase.json
-        for memo in pdir.glob("*relationship_phase.json"):
-            try:
-                data = json.loads(memo.read_text(encoding="utf-8", errors="ignore"))
-                for _k, v in list(data.items())[:1]:
-                    if isinstance(v, dict):
-                        if v.get("phase"):
-                            out.append(f"关系阶段={v['phase']}")
-                        if v.get("current_address_phase"):
-                            out.append(f"称呼阶段={v['current_address_phase']}")
+                        out.append(f"当前互动={ci.get('label')}")
             except Exception:  # noqa: BLE001
                 pass
         return out
@@ -1359,6 +1381,16 @@ class QzoneKitPlugin(Star):
             if item not in seen:
                 seen.add(item)
                 out.append(item)
+        if not out:
+            try:
+                names = [p.name for p in self._state_dirs()]
+            except Exception:  # noqa: BLE001
+                names = []
+            logger.warning(
+                "[QzoneKit] 状态没读到任何字段（来源目录：%s）。可能对方插件改了结构，"
+                "请把它的 plugin_data 文件列表发我，我按新结构适配。",
+                "、".join(names) or "无",
+            )
         return out[:12]
 
     async def _persona_block(self) -> str:
