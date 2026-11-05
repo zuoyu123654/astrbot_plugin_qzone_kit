@@ -185,7 +185,11 @@ class QzoneKitPlugin(Star):
         # 超过 threshold 条（默认 4，即「大于三条」）才筛选；筛完发 publish_min~publish_max 条
         self.select_threshold = max(2, int(cfg.get("post_select_threshold", 4) or 4))
         self.publish_min = max(1, int(cfg.get("post_publish_min", 3) or 3))
-        self.publish_max = max(self.publish_min, int(cfg.get("post_publish_max", 6) or 6))
+        self.publish_max = max(self.publish_min, int(cfg.get("post_publish_max", 5) or 5))
+        # 硬上限：只有「第 publish_max 条后面还有同分」时才放宽到这里
+        self.publish_hard_max = max(
+            self.publish_max, int(cfg.get("post_publish_hard_max", 6) or 6)
+        )
         self.recent_max = max(6, int(cfg.get("recent_message_limit", 40) or 40))
         self.judge_provider = str(cfg.get("judge_provider_id", "") or "").strip()
 
@@ -890,7 +894,8 @@ class QzoneKitPlugin(Star):
         if len(fragments) <= self.select_threshold - 1:  # 没「大于三条」就不挑
             return fragments
         low = min(self.publish_min, len(fragments))
-        high = min(self.publish_max, len(fragments))
+        high = min(self.publish_max, len(fragments))          # 她自己决定的上限
+        hard = min(self.publish_hard_max, len(fragments))     # 同分才放宽到这里
 
         now = time.time()
         lines = []
@@ -901,12 +906,13 @@ class QzoneKitPlugin(Star):
             )
         prompt = (
             "下面是她攒着想发到 QQ 空间的内容。现在要发车了，但她这次不想全发。\n"
-            f"请自己决定发几条（{low}~{high} 条之间，按内容多少来定）。\n"
+            f"请自己决定发几条（{low}~{high} 条之间，按内容多少来定，写进 count）。\n"
             "**给每一条打 1~10 分**：越重要、越有表达欲、越想让人看到的分越高；"
             "没营养的、过期的、重复的分低。\n"
             "评分要求：分数要拉开，不要全给一样的分（同样分的时候只能按时间截，等于白评）。\n"
             "宁可她这次的表达更完整（多条可以合成一条），也不要留一堆没营养的。\n"
-            "只输出 JSON：{\"scores\": [{\"i\": 下标, \"score\": 分数}, ...], \"reason\": \"一句话\"}\n\n"
+            "只输出 JSON：{\"count\": 想发几条, "
+            "\"scores\": [{\"i\": 下标, \"score\": 分数}, ...], \"reason\": \"一句话\"}\n\n"
             + "\n".join(lines)
         )
         try:
@@ -935,13 +941,33 @@ class QzoneKitPlugin(Star):
                         continue
 
             if scores:
-                # 排序：分数高的先；同分 → 新的先（时间近的留下，旧的被截）
+                # 排序：分数高的先；同分 → 新的先
                 order = sorted(
                     (i for i in scores if 0 <= i < len(fragments)),
                     key=lambda i: (scores[i], float(fragments[i].get("at") or 0)),
                     reverse=True,
                 )
-                picked = [fragments[i] for i in order[:high]]
+                # 她自己决定发几条（夹在 low~high）
+                want = high
+                try:
+                    want = int(data.get("count") or high)
+                except (TypeError, ValueError):
+                    want = high
+                want = max(low, min(high, want))
+                picked = [fragments[i] for i in order[:want]]
+                # 只有「第 want 条后面还有同分」才放宽到硬上限 6
+                if len(picked) == high and len(order) > high:
+                    last_score = scores[order[len(picked) - 1]]
+                    while (
+                        len(picked) < hard
+                        and len(picked) < len(order)
+                        and scores[order[len(picked)]] == last_score
+                    ):
+                        picked.append(fragments[order[len(picked)]])
+                        logger.info(
+                            "[QzoneKit] 第 %s 条后面有同分（%g），带上了，这次发 %s 条",
+                            high, last_score, len(picked),
+                        )
                 if len(picked) < low:
                     extra = [
                         f for f in sorted(fragments, key=lambda x: float(x.get("at") or 0), reverse=True)
@@ -949,10 +975,9 @@ class QzoneKitPlugin(Star):
                     ]
                     picked += extra[: low - len(picked)]
                 if len(picked) < len(fragments):
-                    dropped = len(fragments) - len(picked)
                     logger.info(
-                        "[QzoneKit] 攒了 %s 条，按分数筛掉 %s 条，这次发 %s 条（%s）",
-                        len(fragments), dropped, len(picked), data.get("reason", ""),
+                        "[QzoneKit] 攒了 %s 条，这次发 %s 条（%s）",
+                        len(fragments), len(picked), data.get("reason", ""),
                     )
                 else:
                     logger.info("[QzoneKit] 攒了 %s 条，全发", len(fragments))

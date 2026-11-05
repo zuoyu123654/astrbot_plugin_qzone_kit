@@ -111,12 +111,17 @@
   },
   "post_publish_max": {
     "type": "int",
-    "description": "筛选后最多发几段（默认 6）。超过这个数就按「分数低 → 时间久」的顺序截掉。",
-    "default": 6
+    "description": "常规上限：她自己决定发几条（在 min~max 之间），默认 5。",
+    "default": 5
   },
   "post_publish_min": {
     "type": "int",
     "description": "筛选后最少发几段（默认 3）。",
     "default": 3
+  },
+  "post_publish_hard_max": {
+    "type": "int",
+    "description": "硬上限（默认 6）：只有「第 5 条后面还有同分的」时才放宽到这里，把同分的带上。",
+    "default": 6
   }
 }
