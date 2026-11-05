@@ -106,12 +106,17 @@
   },
   "post_select_threshold": {
     "type": "int",
-    "description": "攒到几条才做「筛选」：条数达到这个数，发之前会按重要性排序、太旧又不重要的就不发（默认 3）。",
-    "default": 3
+    "description": "攒到几条以上才做筛选（默认 4，也就是「大于三条」才挑）。不超过这个数就全部发。",
+    "default": 4
   },
   "post_publish_max": {
     "type": "int",
-    "description": "筛选之后这一条最多发几段（默认 2）。没超过筛选阈值时不受这个限制。",
-    "default": 2
+    "description": "筛选后最多发几段（默认 5）。具体几条由她自己判断。",
+    "default": 5
+  },
+  "post_publish_min": {
+    "type": "int",
+    "description": "筛选后最少发几段（默认 3）。",
+    "default": 3
   }
 }

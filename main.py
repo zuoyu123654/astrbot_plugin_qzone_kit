@@ -182,8 +182,10 @@ class QzoneKitPlugin(Star):
             self.sticker_prob = 0.5
         self.max_fragments = max(1, int(cfg.get("post_max_fragments", 5) or 5))
         # 攒太多才筛选：条数 ≥ 阈值时，发之前按重要性排序、只发最想发的几条
-        self.select_threshold = max(2, int(cfg.get("post_select_threshold", 3) or 3))
-        self.publish_max = max(1, int(cfg.get("post_publish_max", 2) or 2))
+        # 超过 threshold 条（默认 4，即「大于三条」）才筛选；筛完发 publish_min~publish_max 条
+        self.select_threshold = max(2, int(cfg.get("post_select_threshold", 4) or 4))
+        self.publish_min = max(1, int(cfg.get("post_publish_min", 3) or 3))
+        self.publish_max = max(self.publish_min, int(cfg.get("post_publish_max", 5) or 5))
         self.recent_max = max(6, int(cfg.get("recent_message_limit", 40) or 40))
         self.judge_provider = str(cfg.get("judge_provider_id", "") or "").strip()
 
@@ -885,8 +887,10 @@ class QzoneKitPlugin(Star):
         只有条数 ≥ select_threshold 才会走这里；没超就直接全发。
         """
 
-        if len(fragments) < self.select_threshold:
+        if len(fragments) <= self.select_threshold - 1:  # 没「大于三条」就不挑
             return fragments
+        low = min(self.publish_min, len(fragments))
+        high = min(self.publish_max, len(fragments))
 
         now = time.time()
         lines = []
@@ -897,8 +901,9 @@ class QzoneKitPlugin(Star):
             )
         prompt = (
             "下面是她攒着想发到 QQ 空间的内容。现在要发车了，但她这次不想全发。\n"
-            "请挑出**最值得现在发**的："            
-            f"最多 {self.publish_max} 条；重要性高的优先，距现在太久又无关紧要的可以舍弃。\n"
+            f"请自己决定发几条（{low}~{high} 条之间，按内容多少来定）："
+            "重要的、她最想说的排前面；距现在太久又无关紧要的可以舍弃。\n"
+            "宁可她这次的表达更完整（多条可以合成一条），也不要留一堆没营养的。\n"
             "只输出 JSON：{\"keep\": [下标...], \"reason\": \"一句话\"}\n\n" + "\n".join(lines)
         )
         try:
@@ -909,16 +914,22 @@ class QzoneKitPlugin(Star):
                 idxs = sorted({int(x) for x in keep if str(x).lstrip("-").isdigit()})
                 picked = [fragments[i] for i in idxs if 0 <= i < len(fragments)]
                 if picked:
+                    # 条数夹在 low~high：模型给多了截掉，给少了补最近的
+                    if len(picked) > high:
+                        picked = picked[:high]
+                    if len(picked) < low:
+                        extra = [f for f in fragments if f not in picked]
+                        picked = picked + extra[: low - len(picked)]
                     if len(picked) < len(fragments):
                         dropped = len(fragments) - len(picked)
                         logger.info(
                             "[QzoneKit] 攒了 %s 条，筛掉 %s 条，这次发 %s 条（%s）",
                             len(fragments), dropped, len(picked), data.get("reason", ""),
                         )
-                    return picked[: self.publish_max]
+                    return picked
         except Exception as exc:  # noqa: BLE001
             logger.warning("[QzoneKit] 筛选失败（%s），按时间取最近的几条", exc)
-        return fragments[-self.publish_max :]
+        return fragments[-high:] if len(fragments) > high else fragments
 
     async def _merge_fragments(self, fragments: list[dict[str, Any]]) -> str:
         """把攒着的几段合成一条说说；模型不给力就直接用换行拼。"""
