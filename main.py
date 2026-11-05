@@ -87,6 +87,8 @@ reply(直接对话回应) —— 没合适的就留空字符串。
  "post": {"want": true/false, "text": "...", "importance": "normal|important|critical", "reason": "一句话"},
  "sticker": "happy 之类的分类，或空字符串"}
 
+【她现在的状态（来自人格与其它插件）】
+[[state]]
 【当前签名】[[signature]]
 【上次改签名】[[sig_last]]
 【上次发说说】[[post_last]]
@@ -170,6 +172,16 @@ class QzoneKitPlugin(Star):
         # 表情包（可选）：默认关，使用者同意才开；开了才会去读 meme_manager 的图包
         # 一次性测试开关：这一轮无论判断结果如何，都真发一条（只生效一次）
         self.force_post_once = bool(cfg.get("test_force_post_once", False))
+        # 是否能读「别的插件里的状态」（好感度/情绪/关系等）和人格
+        self.read_plugin_state = bool(cfg.get("read_plugin_state", True))
+        raw_plugins = str(cfg.get("state_source_plugins", "") or "")
+        self.state_plugins = [
+            x.strip() for x in raw_plugins.replace("，", ",").split(",") if x.strip()
+        ] or [
+            "astrbot_plugin_private_companion",
+            "astrbot_plugin_self_learning",
+            "astrbot_plugin_memory_companion",
+        ]
         # 保底：欠太久没发说说，就在判断时明确要求发一条（0 = 每轮都要求）
         try:
             self.post_fallback_days = float(cfg.get("post_fallback_days", 3) or 0)
@@ -1128,6 +1140,159 @@ class QzoneKitPlugin(Star):
         except Exception:  # noqa: BLE001
             pass
 
+    # ── 状态采集：人格 + 其他插件里的情绪/好感 ─────────────────────────
+    STATE_KEY_RE = (
+        "affection", "好感", "emotion", "情绪", "mood", "心情", "feel",
+        "relation", "relationship", "关系", "intimacy", "亲密度",
+        "energy", "体力", "phase", "阶段", "stage", "trust", "信任",
+        "address", "称呼", "expression_band", "interaction", "positive", "negative",
+    )
+    # 这些字段是插件的运行日志，不是「她的状态」，别抓
+    STATE_NOISE_RE = ("ok", "reason", "backup", "repair", "ran_at", "schema", "version")
+
+    def _plugin_data_roots(self) -> list[Path]:
+        plugins_dir = Path(__file__).resolve().parent.parent
+        return [plugins_dir.parent / "plugin_data"]
+
+    def _extract_known_state(self, root: Path) -> list[str]:
+        """定向读已知插件的状态字段（读不到就返回空，不报错）。"""
+
+        out: list[str] = []
+
+        # ① 陪伴插件：关系角色 + 当前互动状态 + 今日互动
+        comp = root / "astrbot_plugin_private_companion" / "companions.json"
+        if comp.is_file():
+            try:
+                data = json.loads(comp.read_text(encoding="utf-8", errors="ignore"))
+                users = data.get("users") or {}
+                # 只取「主人」或最近互动的那一个
+                rec = None
+                for uid, item in users.items():
+                    if str(item.get("relationship_role") or "") == "owner":
+                        rec = item
+                        break
+                if rec is None and users:
+                    rec = next(iter(users.values()))
+                if isinstance(rec, dict):
+                    role = rec.get("relationship_role")
+                    mode = rec.get("relationship_mode")
+                    if role:
+                        out.append(f"关系={role}" + (f"/{mode}" if mode else ""))
+                    ci = rec.get("current_interaction") or {}
+                    if isinstance(ci, dict) and ci.get("label"):
+                        out.append(f"互动状态={ci.get('label')}({ci.get('expression_band', '')})")
+                    dt = rec.get("relationship_daily_totals") or {}
+                    if isinstance(dt, dict) and dt:
+                        out.append(
+                            f"今日互动 正{dt.get('positive', 0)}/负{dt.get('negative', 0)}"
+                        )
+                    emo = rec.get("last_emotion_event") or {}
+                    if isinstance(emo, dict) and emo:
+                        label = emo.get("label") or emo.get("emotion") or emo.get("type")
+                        if label:
+                            out.append(f"最近情绪={label}")
+            except Exception:  # noqa: BLE001
+                pass
+
+        # ② 记忆插件：关系阶段 + 称呼
+        memo = root / "astrbot_plugin_memory_companion" / "memory_companion_relationship_phase.json"
+        if memo.is_file():
+            try:
+                data = json.loads(memo.read_text(encoding="utf-8", errors="ignore"))
+                for _k, v in list(data.items())[:1]:
+                    if isinstance(v, dict):
+                        if v.get("phase"):
+                            out.append(f"记忆里的关系阶段={v['phase']}")
+                        if v.get("current_address_phase"):
+                            out.append(f"称呼阶段={v['current_address_phase']}")
+            except Exception:  # noqa: BLE001
+                pass
+
+        return out
+
+    def _scan_plugin_state(self) -> list[str]:
+        """从别的插件的 plugin_data 里挑出「像状态」的字段（只读、只挑标量）。"""
+
+        found: list[str] = []
+        for root in self._plugin_data_roots():
+            if not root.is_dir():
+                continue
+            try:
+                found.extend(self._extract_known_state(root))
+            except Exception:  # noqa: BLE001
+                pass
+            for pname in self.state_plugins:
+                pdir = root / pname
+                if not pdir.is_dir():
+                    continue
+                for f in pdir.rglob("*.json"):
+                    try:
+                        if f.stat().st_size > 300 * 1024:
+                            continue
+                        data = json.loads(f.read_text(encoding="utf-8", errors="ignore"))
+                    except Exception:  # noqa: BLE001
+                        continue
+                    for k, v in self._iter_scalars(data, depth=0):
+                        lk = k.lower()
+                        if any(n in lk for n in self.STATE_NOISE_RE):
+                            continue
+                        if any(kw in lk for kw in self.STATE_KEY_RE):
+                            found.append(f"{pname.split('_')[-1]}/{k}={v}")
+                        if len(found) >= 16:
+                            return found
+        # 去重、限量
+        seen, out = set(), []
+        for item in found:
+            if item not in seen:
+                seen.add(item)
+                out.append(item)
+        return out[:12]
+
+    def _iter_scalars(self, obj, depth: int = 0):
+        if depth > 4:
+            return
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                if isinstance(v, (str, int, float, bool)) and len(str(v)) <= 40:
+                    yield str(k), v
+                elif isinstance(v, (dict, list)):
+                    yield from self._iter_scalars(v, depth + 1)
+        elif isinstance(obj, list):
+            for item in obj[:5]:
+                yield from self._iter_scalars(item, depth + 1)
+
+    async def _persona_block(self) -> str:
+        """取当前默认人格的名字和风格提示（截断，避免把整段人格塞进判断）。"""
+
+        try:
+            pm = getattr(self.context, "persona_manager", None)
+            persona = getattr(pm, "selected_default_persona_v3", None) if pm else None
+            if not persona:
+                return ""
+            name = str(persona.get("name") or "")
+            prompt = str(persona.get("prompt") or persona.get("system_prompt") or "")
+            prompt = prompt.replace("\n", " ")[:160]
+            return f"{name}｜{prompt}"
+        except Exception:  # noqa: BLE001
+            return ""
+
+    async def _state_block(self) -> str:
+        """拼一段「她现在的状态」给判断用：人格 + 别的插件里的情绪/好感。"""
+
+        if not self.read_plugin_state:
+            return "（已关闭状态读取）"
+        parts: list[str] = []
+        persona = await self._persona_block()
+        if persona:
+            parts.append("人格：" + persona)
+        try:
+            hits = await asyncio.to_thread(self._scan_plugin_state)
+        except Exception:  # noqa: BLE001
+            hits = []
+        if hits:
+            parts.append("其他插件里的状态：" + "；".join(hits))
+        return "\n".join(parts) if parts else "（没读到外部状态）"
+
     async def _recent_block(self) -> str:
         recent = self.state.get("recent") or []
         if not recent:
@@ -1199,6 +1364,7 @@ class QzoneKitPlugin(Star):
                 prompt_nudge = ""
             prompt = JUDGE_PROMPT + prompt_nudge
             for _k, _v in (
+                ("[[state]]", await self._state_block()),
                 ("[[signature]]", str(sig.get("last_text") or "（还没记过）")),
                 ("[[sig_last]]", self._fmt_ts(sig.get("last_at"))),
                 ("[[post_last]]", self._fmt_ts(post.get("last_at"))),

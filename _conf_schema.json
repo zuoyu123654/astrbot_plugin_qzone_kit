@@ -123,5 +123,15 @@
     "type": "int",
     "description": "硬上限（默认 6）：只有「第 5 条后面还有同分的」时才放宽到这里，把同分的带上。",
     "default": 6
+  },
+  "read_plugin_state": {
+    "type": "bool",
+    "description": "判断她状态时，除了聊天记录，还去读人格和其它插件里的情绪/好感等状态（只读，不改别人的数据）。",
+    "default": true
+  },
+  "state_source_plugins": {
+    "type": "string",
+    "description": "去哪些插件的 plugin_data 里找状态，逗号分隔（默认：陪伴、自我学习、记忆三个）。",
+    "default": ""
   }
 }
