@@ -1,0 +1,28 @@
+name: astrbot_plugin_qzone_kit
+display_name: 空间小助手
+short_desc: 删说说、改资料、发总结；外加「自己会换签名、会发说说」（带冷却、攒批、可带表情包）
+desc: >-
+  把 QQ 空间和 QQ 资料这几件事收成一个插件、五个工具，让模型知道该调谁：
+
+  1. `qzone_delete_feeds` —— 删说说：按「第几条」（由近到远）删一条，
+     或按「今天/昨天/前天/具体日期」整批删；
+  2. `qq_profile_update` —— 改资料：昵称 / 签名 / 在线状态 / 头像（直接走 OneBot 接口）；
+  3. `qzone_post_summary` —— 立刻发一条「今天的总结」（复用 QQ空间插件的写稿逻辑）；
+  4. `qq_signature_maybe_change` —— 她自己想换签名（冷却：平时 13~32 天，非常重要 22~29.2 小时）；
+  5. `qzone_mood_post` —— 她自己想发说说（冷却 2~2.6 天，冷却里攒批合并，3 天没发保底一条，可带表情包）。
+
+  前置插件只有两个：QQ空间（astrbot_plugin_qzone）与 QQ资料管理（astrbot_plugin_qqprofile）。
+  装好之后把「请帮我配置好 AstrBot 里的【空间小助手】插件，并检测功能是否可用。」发给 AI，
+  照 SETUP-FOR-AI.md 配置即可。
+version: 0.3.0
+author: paopao
+repo: https://github.com/zuoyu123654/astrbot_plugin_qzone_kit
+astrbot_version: ">=4.17.0"
+support_platforms:
+  - aiocqhttp
+tags:
+  - QQ空间
+  - 说说
+  - 资料
+  - 自动发说说
+  - 自动签名

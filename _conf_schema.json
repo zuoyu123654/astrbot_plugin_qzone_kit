@@ -1,0 +1,107 @@
+{
+  "owner_uids": {
+    "type": "string",
+    "description": "谁能用这几个工具（删说说/改资料/发总结/让她自己改签名）。多个用英文逗号分隔；留空 = 不限制（管理员始终可用）。",
+    "default": ""
+  },
+  "daily_post_enabled": {
+    "type": "bool",
+    "description": "每天自动发说说（QQ空间插件那条 23 点的「今天的总结」）。默认开；配置前请先问使用者要不要开。",
+    "default": true
+  },
+  "auto_signature_enabled": {
+    "type": "bool",
+    "description": "自动改签名：后台看她最近聊了什么，心情/目标/兴趣变了就自己换一个。平时很克制，十几天才动一次。",
+    "default": true
+  },
+  "signature_normal_min_days": {
+    "type": "float",
+    "description": "平时改签名的冷却下限（天，默认 12）。每次都会在上下限之间随机落一个。",
+    "default": 12
+  },
+  "signature_normal_max_days": {
+    "type": "float",
+    "description": "平时改签名的冷却上限（天，默认 16.1）。",
+    "default": 16.1
+  },
+  "signature_critical_min_hours": {
+    "type": "float",
+    "description": "遇到「非常重要」的事时，改签名的冷却下限（小时，默认 22）。",
+    "default": 22
+  },
+  "signature_critical_max_hours": {
+    "type": "float",
+    "description": "非常重要时的冷却上限（小时，默认 29.2）。实际在 22~29.2 小时之间随机。",
+    "default": 29.2
+  },
+  "auto_post_enabled": {
+    "type": "bool",
+    "description": "自动发说说：发泄/被安慰/新鲜事/重要事/想记录/有感触时发。也有冷却，不是天天发。",
+    "default": true
+  },
+  "post_normal_min_days": {
+    "type": "float",
+    "description": "平时两条「自己发的」说说之间至少隔几天（默认 2）。和 23 点那条总结各算各的。",
+    "default": 2
+  },
+  "post_normal_max_days": {
+    "type": "float",
+    "description": "平时说说的冷却上限（天，默认 2.6）。",
+    "default": 2.6
+  },
+  "post_critical_min_hours": {
+    "type": "float",
+    "description": "非常重要时的发说说冷却下限（小时，默认 22）。",
+    "default": 22
+  },
+  "post_critical_max_hours": {
+    "type": "float",
+    "description": "非常重要时的发说说冷却上限（小时，默认 29.2）。",
+    "default": 29.2
+  },
+  "post_max_fragments": {
+    "type": "int",
+    "description": "冷却期间最多攒几段「想发的」；到点合成一条发出去（默认 5）。",
+    "default": 5
+  },
+  "judge_interval_minutes": {
+    "type": "int",
+    "description": "多久看一次最近的聊天，判断要不要改签名/发说说（默认 45 分钟）。想先试可以填 3、5，正常用再改回来。",
+    "default": 45
+  },
+  "dry_run": {
+    "type": "bool",
+    "description": "试运行：只判断、只在日志里写出「本来要改什么签名/发什么说说」，不真的动空间和签名。验证通了再关掉。",
+    "default": false
+  },
+  "recent_message_limit": {
+    "type": "int",
+    "description": "判断时回看最近多少条消息（默认 40）。",
+    "default": 40
+  },
+  "judge_provider_id": {
+    "type": "string",
+    "description": "判断用哪个模型（留空 = 用当前会话的模型）。这个判断不花多少 token，一般不用改。",
+    "default": ""
+  },
+  "post_sticker_enabled": {
+    "type": "bool",
+    "description": "【需要使用者同意才开】发说说时配一张表情包：来源是「表情包管理器」(meme_manager) 里的表情包（https://github.com/anka-afk/astrbot_plugin_meme_manager），会从它所有图包里挑情绪合适的一张，动图/其他格式会转成静态 JPEG。默认关。",
+    "default": false
+  },
+  "post_sticker_prob": {
+    "type": "float",
+    "description": "上面那个开着时，多少比例的说说会带图（0~1，默认 0.75）。",
+    "default": 0.75
+  },
+  "test_force_post_once": {
+    "type": "bool",
+    "description": "【测试用】下一轮判断不管模型说发不发，都拿它写的正文真发一条（只生效一次，重启后若仍为 true 会再发一次）。平时请关掉。",
+    "default": false
+  },
+  "post_fallback_days": {
+    "type": "float",
+    "description": "保底：多少天没发说说，就要求她「这一轮必须发一条」（没有大事就写点日常）。默认 3 天。",
+    "default": 3
+  }
+}
