@@ -24,6 +24,22 @@
 > **如果你用的是比 6.5.6 更新的版本**：字段名可能变了（例如状态被挪到别的容器）。
 > 本插件不依赖固定字段名——按「key 像不像状态」识别；真读不到时日志会打警告，
 > 把 `data/plugin_data/astrbot_plugin_private_companion/` 里那几个文件名发我，我当天就能适配。
+
+### 陪伴插件版本适配（AI 配置时按版本选）
+
+| 你装的版本 | 数据在哪 | 本插件怎么读 |
+| --- | --- | --- |
+| **6.5.x**（插件市场稳定版） | `plugin_data/astrbot_plugin_private_companion/companions.json`（顶层就是面板数据：daily_state、body_cycle_state、current_interaction…） | 读这个 json，按 key 语义挑（睡眠/情绪/关系/目标/梦境/天气…） |
+| **7.x**（仓库最新版，V2 架构） | `plugin_data/astrbot_plugin_private_companion/companion-7/` 下的 **SQLite**（表名如 state/relationship/memory…） | 递归扫 `*.db`，按**表名+列名语义**挑最新一行 |
+
+两个版本可以同时兼容：插件不认识版本号，只按「数据长什么样」去读，所以市场版和最新版**都适配**。
+AI 配置时先看一眼 `data/plugins/astrbot_plugin_private_companion/metadata.yaml` 的 `version:`：
+
+- `6.x` ⇒ 读 `companions.json`；
+- `7.x` ⇒ 读 `companion-7/*.db`（首次运行可能还没生成，聊两句就会写）。
+
+**都读不到时**：日志会打 `状态没读到任何字段（来源目录：…）`，把 `plugin_data/astrbot_plugin_private_companion/` 下的文件列表发我适配。
+
 > **版本兼容**：**本插件在插件市场的 6.5.6 稳定版上验证过（本机就是 6.5.6）**；
 > 从仓库装的最新版（页面可能叫「我会永远陪着你陪着你」）也能用——
 > 本插件都不依赖固定字段名——它会按「key 像不像状态」去认（睡眠/情绪/关系/目标/梦境/天气…），

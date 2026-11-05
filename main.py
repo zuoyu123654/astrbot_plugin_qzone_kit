@@ -1298,6 +1298,49 @@ class QzoneKitPlugin(Star):
                 break
         return out
 
+    def _extract_sqlite_state(self, db: Path) -> list[str]:
+        """7.x（companion_v2）把状态放在 sqlite 里：按表名/列名的语义挑最新一行。"""
+
+        import sqlite3
+
+        out: list[str] = []
+        try:
+            if db.stat().st_size > 200 * 1024 * 1024:
+                return out
+            con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        except Exception:  # noqa: BLE001
+            return out
+        try:
+            tables = [r[0] for r in con.execute(
+                "select name from sqlite_master where type='table'")]
+            scored = [(self._state_score(t), t) for t in tables]
+            scored = sorted([x for x in scored if x[0] > 0], reverse=True)
+            for _sc, table in scored[:3]:
+                try:
+                    cols = [r[1] for r in con.execute(f"PRAGMA table_info({table})")]
+                    row = con.execute(
+                        f"select * from {table} order by rowid desc limit 1").fetchone()
+                    if not row:
+                        continue
+                    pairs = []
+                    for c, v in zip(cols, row):
+                        if isinstance(v, (str, int, float)) and str(v).strip():
+                            sv = str(v).strip()
+                            if len(sv) <= 60 and (
+                                self._state_score(c) > 0 or c.lower() in ("phase", "mood", "value", "label")
+                            ):
+                                pairs.append(f"{c}={sv}")
+                    if pairs:
+                        out.append(f"[{db.stem}:{table}] " + "；".join(pairs[:4])[:120])
+                except Exception:  # noqa: BLE001
+                    continue
+        finally:
+            try:
+                con.close()
+            except Exception:  # noqa: BLE001
+                pass
+        return out
+
     def _extract_dir_state(self, pdir: Path) -> list[str]:
         """从一个插件的 plugin_data 目录里读状态（不挑文件名，版本无关）。"""
 
@@ -1324,6 +1367,16 @@ class QzoneKitPlugin(Star):
                 out.extend(f"[{fp.stem}] {g}" for g in got)
             if len(out) >= 10:
                 break
+
+        # 7.x（companion_v2）：sqlite 存状态（可能在 companion-7/ 子目录里）
+        try:
+            for db in pdir.rglob("*.db"):
+                if db.is_file():
+                    out.extend(self._extract_sqlite_state(db))
+                    if len(out) >= 10:
+                        break
+        except Exception:  # noqa: BLE001
+            pass
 
         # 兼容老结构：关系角色/互动状态这类「人」的数据
         comp = pdir / "companions.json"
