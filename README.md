@@ -16,8 +16,13 @@
 > | --- | --- |
 > | **QQ空间**（`astrbot_plugin_qzone`，作者 Zhalslar） | https://github.com/Zhalslar/astrbot_plugin_qzone |
 > | **QQ资料管理**（`astrbot_plugin_qqprofile`，作者 Zhalslar） | https://github.com/Zhalslar/astrbot_plugin_qqprofile |
+| **【强烈推荐】我会永远陪着你**（`astrbot_plugin_private_companion`） | https://github.com/menglimi/astrbot_plugin_private_companion |
 >
-> 先把这两个装好、启用（QQ空间要能取到 Cookie，也就是能正常看/发说说），再装本插件。
+> 先把前两个装好、启用（QQ空间要能取到 Cookie，也就是能正常看/发说说），再装本插件。
+>
+> **第三个「我会永远陪着你」强烈推荐装**：她的睡眠、精力、情绪、关系、目标、日记碎片、梦境
+> 都存在那个插件的陪伴面板里。装上之后本插件会去读这些状态（只读），判断会准很多；
+> 不装也能跑，但只能靠聊天记录猜她的状态。
 >
 > **怎么配：装好两个前置之后，把下面这句话发给你的 AI（连同本文件的 `SETUP-FOR-AI.md` 一起）：**
 >

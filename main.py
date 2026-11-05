@@ -71,6 +71,14 @@ B. 要不要发一条 QQ 空间说说？
    - 不值得：日常寒暄、重复的话题、没什么可说的。
    - 给 1~3 句、60~160 字的正文，第一人称、口语、具体（提一下是什么事），不要像总结报告。
 
+【怎么把她现在的状态用上（很重要）】
+- 睡眠/精力差（比如「很晚了」「精神发飘」「困」）→ 只写短句、轻的，别长篇大论；太晚了宁可少发或干脆不发。
+- 情绪低落、委屈、被安慰 → 更容易想写，这类适合发（也适合当成签名的心情）。
+- 今天有明确进展 / 目标推进 / 发生了大事 → 值得记录，重要度可以直接给 important。
+- 梦境、日记碎片、当前片段 → 是最好的素材，可以化用到说说里，别照抄。
+- 关系和互动偏冷（互动状态不是放松、或者很久没聊）→ 少发，或者只写给自己看的那种。
+- 白天精神好、刚被夸、刚聊得开心 → 可以主动发一条轻快的。
+
 重要程度分三档：
   normal    = 有意思，但不急
   important = 挺重要（心情明显波动、确实有新目标/大事）
@@ -1205,6 +1213,64 @@ class QzoneKitPlugin(Star):
             pass
         return picked
 
+    # 陪伴面板 = companions.json 的顶层分区（按面板上的栏目取）
+    PANEL_KEYS = (
+        ("daily_state", "今日状态"),
+        ("state_conditions", "状态条件"),
+        ("body_cycle_state", "身体/精力"),
+        ("current_interaction", "当前互动"),
+        ("daily_story_plan", "当前片段"),
+        ("personal_goal_state", "个人目标"),
+        ("daily_weather", "天气"),
+        ("qweather_location", "位置"),
+        ("bot_diaries", "日记碎片"),
+        ("dream_fragments", "梦境碎片"),
+        ("daily_dream", "昨晚梦境"),
+        ("persona_lifecycle", "扮演状态"),
+        ("unified_person", "统一人格"),
+    )
+
+    def _flatten(self, obj, prefix: str = "", depth: int = 0) -> list[str]:
+        """把一段状态拍平成「a.b=值」；只取短标量，最多两层。"""
+
+        out: list[str] = []
+        if depth > 1:
+            return out
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                key = f"{prefix}.{k}" if prefix else str(k)
+                if isinstance(v, (str, int, float, bool)) and str(v).strip():
+                    s = str(v).strip()
+                    if len(s) <= 50:
+                        out.append(f"{key}={s}")
+                elif isinstance(v, (dict, list)):
+                    out.extend(self._flatten(v, key, depth + 1))
+        elif isinstance(obj, list):
+            for i, v in enumerate(obj[:3]):
+                out.extend(self._flatten(v, f"{prefix}[{i}]", depth + 1))
+        return out
+
+    def _extract_panel_state(self, comp: Path) -> list[str]:
+        """从 companions.json 按「陪伴面板」的栏目读状态。"""
+
+        try:
+            data = json.loads(comp.read_text(encoding="utf-8", errors="ignore"))
+        except Exception:  # noqa: BLE001
+            return []
+        out: list[str] = []
+        for key, label in self.PANEL_KEYS:
+            block = data.get(key)
+            if not block:
+                continue
+            flat = self._flatten(block)
+            if not flat:
+                continue
+            picked = "；".join(flat[:4])[:150]
+            out.append(f"{label}: {picked}")
+            if len(out) >= 8:
+                break
+        return out
+
     def _extract_dir_state(self, pdir: Path) -> list[str]:
         """从一个插件的 plugin_data 目录里定向读状态。"""
 
@@ -1213,6 +1279,10 @@ class QzoneKitPlugin(Star):
         # ① 「我会永远陪着你」这类：companions.json
         comp = pdir / "companions.json"
         if comp.is_file():
+            try:
+                out.extend(self._extract_panel_state(comp))
+            except Exception:  # noqa: BLE001
+                pass
             try:
                 data = json.loads(comp.read_text(encoding="utf-8", errors="ignore"))
                 users = data.get("users") or {}
@@ -1320,7 +1390,7 @@ class QzoneKitPlugin(Star):
         except Exception:  # noqa: BLE001
             hits = []
         if hits:
-            parts.append("其他插件里的状态：" + "；".join(hits))
+            parts.append("陪伴面板/其他插件里的状态（只读）：" + "；".join(hits))
         return "\n".join(parts) if parts else "（没读到外部状态）"
 
     async def _recent_block(self) -> str:

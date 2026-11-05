@@ -3,8 +3,12 @@ display_name: 空间小助手
 short_desc: 删说说、改资料；她自己会换签名、会发空间（攒多了会挑重要的发，可带表情包）
 desc: >-
   【需要的前置】
-  QQ空间（astrbot_plugin_qzone）与 QQ资料管理（astrbot_plugin_qqprofile），两个都装好并启用。
-  想让它给说说配表情包，再装「表情包管理器」（meme_manager）。
+  1. QQ空间 astrbot_plugin_qzone　2. QQ资料管理 astrbot_plugin_qqprofile —— 两个必装并启用。
+  3. 【强烈推荐】我会永远陪着你 astrbot_plugin_private_companion
+     https://github.com/menglimi/astrbot_plugin_private_companion
+     装了它，本插件才能读到她的睡眠/精力/情绪/关系/目标/日记/梦境这些真实状态，
+     判断「该不该发说说、该换什么签名」会准得多；不装也能用，只是只能靠聊天记录猜。
+  4. 可选：表情包管理器 meme_manager（给说说配图）。
 
   【功能】
   1. 删说说：按「第几条」或「哪一天（今天/昨天/前天/具体日期）」整批删。
