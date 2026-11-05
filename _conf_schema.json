@@ -136,8 +136,8 @@
   },
   "judge_only_on_new": {
     "type": "bool",
-    "description": "只在「上次判断之后有新聊天」时才调模型判断；没人说话就不判断（省 token，也不像闹钟）。",
-    "default": true
+    "description": "（默认关）只在有新聊天时判断。判断还兼着改签名等效果，所以平时建议关着。",
+    "default": false
   },
   "judge_interval_jitter": {
     "type": "float",

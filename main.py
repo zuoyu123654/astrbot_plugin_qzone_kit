@@ -176,7 +176,7 @@ class QzoneKitPlugin(Star):
         # 可以调到几分钟，方便先试；正经用还是 45
         self.judge_minutes = max(1, int(cfg.get("judge_interval_minutes", 45) or 45))
         # 只在「有新聊天」时才判断；间隔随机浮动，别像闹钟
-        self.judge_only_on_new = bool(cfg.get("judge_only_on_new", True))
+        self.judge_only_on_new = bool(cfg.get("judge_only_on_new", False))
         try:
             self.judge_jitter = max(0.0, min(0.8, float(cfg.get("judge_interval_jitter", 0.35))))
         except (TypeError, ValueError):
@@ -314,7 +314,7 @@ class QzoneKitPlugin(Star):
             self.post_crit_min_h,
             self.post_crit_max_h,
             self.judge_minutes,
-            "（有新聊天才判断，±%d%% 浮动）" % int(self.judge_jitter * 100) if self.judge_only_on_new else "",
+            "（间隔 ±%d%% 浮动%s）" % (int(self.judge_jitter * 100), "，仅新聊天触发" if self.judge_only_on_new else ""),
         )
         if self.read_plugin_state:
             try:
