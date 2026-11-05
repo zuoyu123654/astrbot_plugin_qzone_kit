@@ -4,7 +4,7 @@ short_desc: 删说说、改资料；她自己会换签名、会发空间（攒�
 desc: >-
   【需要的前置】
   1. QQ空间 astrbot_plugin_qzone　2. QQ资料管理 astrbot_plugin_qqprofile —— 两个必装并启用。
-  3. 【强烈推荐】我会永远陪着你 astrbot_plugin_private_companion
+  3. 【强烈推荐】我会永远陪着你 astrbot_plugin_private_companion（适配插件市场 6.5.6 稳定版）
      https://github.com/menglimi/astrbot_plugin_private_companion
      装了它，本插件才能读到她的睡眠/精力/情绪/关系/目标/日记/梦境这些真实状态，
      判断「该不该发说说、该换什么签名」会准得多；不装也能用，只是只能靠聊天记录猜。
