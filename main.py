@@ -301,6 +301,12 @@ class QzoneKitPlugin(Star):
             self.post_crit_max_h,
             self.judge_minutes,
         )
+        if self.read_plugin_state:
+            try:
+                srcs = [p.name for p in self._state_dirs()]
+                logger.info("[QzoneKit] 状态来源：%s", "、".join(srcs) or "（没找到）")
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[QzoneKit] 状态来源探测失败：%s", exc)
         logger.info(
             "[QzoneKit] 开关：每天自动发说说=%s｜自动改签名=%s｜自动发说说=%s｜配图=%s(%.0f%%)",
             self.daily_post,
@@ -1154,25 +1160,69 @@ class QzoneKitPlugin(Star):
         plugins_dir = Path(__file__).resolve().parent.parent
         return [plugins_dir.parent / "plugin_data"]
 
-    def _extract_known_state(self, root: Path) -> list[str]:
-        """定向读已知插件的状态字段（读不到就返回空，不报错）。"""
+    def _state_dirs(self) -> list[Path]:
+        """找出该读哪些插件的 plugin_data 目录（不写死目录名）。"""
+
+        plugins_dir = Path(__file__).resolve().parent.parent
+        data_dir = plugins_dir.parent / "plugin_data"
+        picked: list[Path] = []
+
+        def add(d: Path) -> None:
+            if d.is_dir() and d not in picked:
+                picked.append(d)
+
+        # ① 配置里点名的
+        for name in self.state_plugins:
+            add(data_dir / name)
+
+        # ② 按显示名自动发现（「我会永远陪着你」「我会牢牢记住你」这类）
+        # 只认「陪伴/记忆」这两类插件；别把「B站动态记忆桥」也扫进来
+        keywords = ("陪着你", "陪伴", "记住你", "companion", "memory_companion")
+        try:
+            for p in plugins_dir.iterdir():
+                meta = p / "metadata.yaml"
+                if not meta.is_file():
+                    continue
+                # 目录名也得像「陪伴/记忆」类，避免把 B站记忆桥这种也扫进来
+                if not any(k in p.name.lower() for k in ("companion", "memory")):
+                    continue
+                text = meta.read_text(encoding="utf-8", errors="ignore").lower()
+                if any(k.lower() in text for k in keywords):
+                    add(data_dir / p.name)
+        except Exception:  # noqa: BLE001
+            pass
+
+        # ③ 按文件特征兜底：谁有 companions.json / *relationship_phase.json 就认谁
+        try:
+            for d in data_dir.iterdir():
+                if not d.is_dir():
+                    continue
+                if (d / "companions.json").is_file() or any(
+                    d.glob("*relationship_phase.json")
+                ):
+                    add(d)
+        except Exception:  # noqa: BLE001
+            pass
+        return picked
+
+    def _extract_dir_state(self, pdir: Path) -> list[str]:
+        """从一个插件的 plugin_data 目录里定向读状态。"""
 
         out: list[str] = []
 
-        # ① 陪伴插件：关系角色 + 当前互动状态 + 今日互动
-        comp = root / "astrbot_plugin_private_companion" / "companions.json"
+        # ① 「我会永远陪着你」这类：companions.json
+        comp = pdir / "companions.json"
         if comp.is_file():
             try:
                 data = json.loads(comp.read_text(encoding="utf-8", errors="ignore"))
                 users = data.get("users") or {}
-                # 只取「主人」或最近互动的那一个
                 rec = None
-                for uid, item in users.items():
-                    if str(item.get("relationship_role") or "") == "owner":
+                for _uid, item in users.items():
+                    if isinstance(item, dict) and str(item.get("relationship_role") or "") == "owner":
                         rec = item
                         break
                 if rec is None and users:
-                    rec = next(iter(users.values()))
+                    rec = next((v for v in users.values() if isinstance(v, dict)), None)
                 if isinstance(rec, dict):
                     role = rec.get("relationship_role")
                     mode = rec.get("relationship_mode")
@@ -1183,9 +1233,7 @@ class QzoneKitPlugin(Star):
                         out.append(f"互动状态={ci.get('label')}({ci.get('expression_band', '')})")
                     dt = rec.get("relationship_daily_totals") or {}
                     if isinstance(dt, dict) and dt:
-                        out.append(
-                            f"今日互动 正{dt.get('positive', 0)}/负{dt.get('negative', 0)}"
-                        )
+                        out.append(f"今日互动 正{dt.get('positive', 0)}/负{dt.get('negative', 0)}")
                     emo = rec.get("last_emotion_event") or {}
                     if isinstance(emo, dict) and emo:
                         label = emo.get("label") or emo.get("emotion") or emo.get("type")
@@ -1194,72 +1242,54 @@ class QzoneKitPlugin(Star):
             except Exception:  # noqa: BLE001
                 pass
 
-        # ② 记忆插件：关系阶段 + 称呼
-        memo = root / "astrbot_plugin_memory_companion" / "memory_companion_relationship_phase.json"
-        if memo.is_file():
+        # ② 「我会牢牢记住你」这类：*relationship_phase.json
+        for memo in pdir.glob("*relationship_phase.json"):
             try:
                 data = json.loads(memo.read_text(encoding="utf-8", errors="ignore"))
                 for _k, v in list(data.items())[:1]:
                     if isinstance(v, dict):
                         if v.get("phase"):
-                            out.append(f"记忆里的关系阶段={v['phase']}")
+                            out.append(f"关系阶段={v['phase']}")
                         if v.get("current_address_phase"):
                             out.append(f"称呼阶段={v['current_address_phase']}")
             except Exception:  # noqa: BLE001
                 pass
-
         return out
 
     def _scan_plugin_state(self) -> list[str]:
-        """从别的插件的 plugin_data 里挑出「像状态」的字段（只读、只挑标量）。"""
+        """汇总所有状态来源；读不到就返回空，不影响判断。"""
 
         found: list[str] = []
-        for root in self._plugin_data_roots():
-            if not root.is_dir():
-                continue
+        for pdir in self._state_dirs():
             try:
-                found.extend(self._extract_known_state(root))
+                found.extend(self._extract_dir_state(pdir))
             except Exception:  # noqa: BLE001
                 pass
-            for pname in self.state_plugins:
-                pdir = root / pname
-                if not pdir.is_dir():
-                    continue
+            # 通用兜底：这个目录里的小 json 再按关键词捞一遍
+            try:
                 for f in pdir.rglob("*.json"):
-                    try:
-                        if f.stat().st_size > 300 * 1024:
-                            continue
-                        data = json.loads(f.read_text(encoding="utf-8", errors="ignore"))
-                    except Exception:  # noqa: BLE001
+                    if f.stat().st_size > 300 * 1024:
                         continue
+                    data = json.loads(f.read_text(encoding="utf-8", errors="ignore"))
                     for k, v in self._iter_scalars(data, depth=0):
                         lk = k.lower()
                         if any(n in lk for n in self.STATE_NOISE_RE):
                             continue
                         if any(kw in lk for kw in self.STATE_KEY_RE):
-                            found.append(f"{pname.split('_')[-1]}/{k}={v}")
+                            found.append(f"{pdir.name.split('_')[-1]}/{k}={v}")
                         if len(found) >= 16:
-                            return found
-        # 去重、限量
+                            break
+            except Exception:  # noqa: BLE001
+                pass
+            if len(found) >= 16:
+                break
+
         seen, out = set(), []
         for item in found:
             if item not in seen:
                 seen.add(item)
                 out.append(item)
         return out[:12]
-
-    def _iter_scalars(self, obj, depth: int = 0):
-        if depth > 4:
-            return
-        if isinstance(obj, dict):
-            for k, v in obj.items():
-                if isinstance(v, (str, int, float, bool)) and len(str(v)) <= 40:
-                    yield str(k), v
-                elif isinstance(v, (dict, list)):
-                    yield from self._iter_scalars(v, depth + 1)
-        elif isinstance(obj, list):
-            for item in obj[:5]:
-                yield from self._iter_scalars(item, depth + 1)
 
     async def _persona_block(self) -> str:
         """取当前默认人格的名字和风格提示（截断，避免把整段人格塞进判断）。"""
