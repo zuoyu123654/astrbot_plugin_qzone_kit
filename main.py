@@ -185,7 +185,7 @@ class QzoneKitPlugin(Star):
         # 超过 threshold 条（默认 4，即「大于三条」）才筛选；筛完发 publish_min~publish_max 条
         self.select_threshold = max(2, int(cfg.get("post_select_threshold", 4) or 4))
         self.publish_min = max(1, int(cfg.get("post_publish_min", 3) or 3))
-        self.publish_max = max(self.publish_min, int(cfg.get("post_publish_max", 5) or 5))
+        self.publish_max = max(self.publish_min, int(cfg.get("post_publish_max", 6) or 6))
         self.recent_max = max(6, int(cfg.get("recent_message_limit", 40) or 40))
         self.judge_provider = str(cfg.get("judge_provider_id", "") or "").strip()
 
@@ -901,35 +901,66 @@ class QzoneKitPlugin(Star):
             )
         prompt = (
             "下面是她攒着想发到 QQ 空间的内容。现在要发车了，但她这次不想全发。\n"
-            f"请自己决定发几条（{low}~{high} 条之间，按内容多少来定）："
-            "重要的、她最想说的排前面；距现在太久又无关紧要的可以舍弃。\n"
+            f"请自己决定发几条（{low}~{high} 条之间，按内容多少来定）。\n"
+            "**给每一条打 1~10 分**：越重要、越有表达欲、越想让人看到的分越高；"
+            "没营养的、过期的、重复的分低。\n"
+            "评分要求：分数要拉开，不要全给一样的分（同样分的时候只能按时间截，等于白评）。\n"
             "宁可她这次的表达更完整（多条可以合成一条），也不要留一堆没营养的。\n"
-            "只输出 JSON：{\"keep\": [下标...], \"reason\": \"一句话\"}\n\n" + "\n".join(lines)
+            "只输出 JSON：{\"scores\": [{\"i\": 下标, \"score\": 分数}, ...], \"reason\": \"一句话\"}\n\n"
+            + "\n".join(lines)
         )
         try:
             reply = await self._llm(prompt)
             data = self._parse_json(reply) or {}
-            keep = data.get("keep")
-            if isinstance(keep, list):
-                idxs = sorted({int(x) for x in keep if str(x).lstrip("-").isdigit()})
-                picked = [fragments[i] for i in idxs if 0 <= i < len(fragments)]
-                if picked:
-                    # 条数夹在 low~high：模型给多了截掉，给少了补最近的
-                    if len(picked) > high:
-                        picked = picked[:high]
-                    if len(picked) < low:
-                        extra = [f for f in fragments if f not in picked]
-                        picked = picked + extra[: low - len(picked)]
-                    if len(picked) < len(fragments):
-                        dropped = len(fragments) - len(picked)
-                        logger.info(
-                            "[QzoneKit] 攒了 %s 条，筛掉 %s 条，这次发 %s 条（%s）",
-                            len(fragments), dropped, len(picked), data.get("reason", ""),
-                        )
-                    return picked
+            scores: dict[int, float] = {}
+            raw = data.get("scores")
+            if isinstance(raw, list):
+                for item in raw:
+                    if isinstance(item, dict):
+                        try:
+                            scores[int(item.get("i"))] = float(item.get("score"))
+                        except (TypeError, ValueError):
+                            continue
+                    else:  # 兼容旧格式：纯下标列表，当作同分
+                        try:
+                            scores[int(item)] = 0.0
+                        except (TypeError, ValueError):
+                            continue
+            keep_old = data.get("keep")
+            if not scores and isinstance(keep_old, list):
+                for x in keep_old:
+                    try:
+                        scores[int(x)] = 0.0
+                    except (TypeError, ValueError):
+                        continue
+
+            if scores:
+                # 排序：分数高的先；同分 → 新的先（时间近的留下，旧的被截）
+                order = sorted(
+                    (i for i in scores if 0 <= i < len(fragments)),
+                    key=lambda i: (scores[i], float(fragments[i].get("at") or 0)),
+                    reverse=True,
+                )
+                picked = [fragments[i] for i in order[:high]]
+                if len(picked) < low:
+                    extra = [
+                        f for f in sorted(fragments, key=lambda x: float(x.get("at") or 0), reverse=True)
+                        if f not in picked
+                    ]
+                    picked += extra[: low - len(picked)]
+                if len(picked) < len(fragments):
+                    dropped = len(fragments) - len(picked)
+                    logger.info(
+                        "[QzoneKit] 攒了 %s 条，按分数筛掉 %s 条，这次发 %s 条（%s）",
+                        len(fragments), dropped, len(picked), data.get("reason", ""),
+                    )
+                else:
+                    logger.info("[QzoneKit] 攒了 %s 条，全发", len(fragments))
+                return picked
         except Exception as exc:  # noqa: BLE001
-            logger.warning("[QzoneKit] 筛选失败（%s），按时间取最近的几条", exc)
-        return fragments[-high:] if len(fragments) > high else fragments
+            logger.warning("[QzoneKit] 筛选失败（%s），按时间保留最新的几条", exc)
+        newest = sorted(fragments, key=lambda x: float(x.get("at") or 0), reverse=True)
+        return newest[:high] if len(fragments) > high else fragments
 
     async def _merge_fragments(self, fragments: list[dict[str, Any]]) -> str:
         """把攒着的几段合成一条说说；模型不给力就直接用换行拼。"""

@@ -111,8 +111,8 @@
   },
   "post_publish_max": {
     "type": "int",
-    "description": "筛选后最多发几段（默认 5）。具体几条由她自己判断。",
-    "default": 5
+    "description": "筛选后最多发几段（默认 6）。超过这个数就按「分数低 → 时间久」的顺序截掉。",
+    "default": 6
   },
   "post_publish_min": {
     "type": "int",
