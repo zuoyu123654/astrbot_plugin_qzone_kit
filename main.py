@@ -1324,14 +1324,30 @@ class QzoneKitPlugin(Star):
                         continue
                     pairs = []
                     for c, v in zip(cols, row):
-                        if isinstance(v, (str, int, float)) and str(v).strip():
-                            sv = str(v).strip()
-                            if len(sv) <= 60 and (
-                                self._state_score(c) > 0 or c.lower() in ("phase", "mood", "value", "label")
-                            ):
-                                pairs.append(f"{c}={sv}")
+                        if not isinstance(v, (str, int, float)):
+                            continue
+                        sv = str(v).strip()
+                        if not sv:
+                            continue
+                        lc = c.lower()
+                        # ① 整段 JSON 存在一列里（V2 的 record_json / *_json / payload）
+                        if lc.endswith("_json") or lc in ("payload", "data", "value"):
+                            try:
+                                obj = json.loads(sv) if sv[:1] in ("{", "[") else None
+                            except Exception:  # noqa: BLE001
+                                obj = None
+                            if obj is not None:
+                                flat = self._flatten(obj)
+                                pairs.extend(flat[:4])
+                                continue
+                        # ② 普通标量列
+                        if len(sv) <= 60 and (
+                            self._state_score(c) > 0
+                            or lc in ("phase", "mood", "value", "label", "state", "status")
+                        ):
+                            pairs.append(f"{c}={sv}")
                     if pairs:
-                        out.append(f"[{db.stem}:{table}] " + "；".join(pairs[:4])[:120])
+                        out.append(f"[{db.stem}:{table}] " + "；".join(pairs[:5])[:150])
                 except Exception:  # noqa: BLE001
                     continue
         finally:
