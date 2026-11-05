@@ -65,6 +65,9 @@ A. 要不要改她的 QQ 签名？
    - 只给一句 12~24 字的签名，可以带一点她的口癖，不要引号、不要 emoji 堆叠。
 B. 要不要发一条 QQ 空间说说？
    - 值得发的场景：发泄、被别人安慰到、遇到新鲜事/重要事、想记录点什么、想找人说说话、有感触。
+   - **也允许写「不想当面说出口的话」**：暗戳戳的吐槽、心里憋着的小情绪、
+     对某件事的真实看法、不好意思直接讲的委屈或小心思 —— 这种恰恰是适合发空间的。
+     写的时候用第一人称、克制一点，别点名骂人、别写成对谁的控诉。
    - 不值得：日常寒暄、重复的话题、没什么可说的。
    - 给 1~3 句、60~160 字的正文，第一人称、口语、具体（提一下是什么事），不要像总结报告。
 
@@ -178,6 +181,9 @@ class QzoneKitPlugin(Star):
         except (TypeError, ValueError):
             self.sticker_prob = 0.5
         self.max_fragments = max(1, int(cfg.get("post_max_fragments", 5) or 5))
+        # 攒太多才筛选：条数 ≥ 阈值时，发之前按重要性排序、只发最想发的几条
+        self.select_threshold = max(2, int(cfg.get("post_select_threshold", 3) or 3))
+        self.publish_max = max(1, int(cfg.get("post_publish_max", 2) or 2))
         self.recent_max = max(6, int(cfg.get("recent_message_limit", 40) or 40))
         self.judge_provider = str(cfg.get("judge_provider_id", "") or "").strip()
 
@@ -620,81 +626,16 @@ class QzoneKitPlugin(Star):
 
     # ── 表情包（可选，需要使用者同意才会启用） ────────────────────────────
     def _sticker_roots(self) -> list[Path]:
-        """meme_manager 的图包目录（只读，不碰它的代码）。"""
+        """meme_manager 的图包目录（只读）。路径全从插件自身位置推导，不写死本机路径。"""
 
+        plugins_dir = Path(__file__).resolve().parent.parent  # <AstrBot>/data/plugins
+        data_dir = plugins_dir.parent                          # <AstrBot>/data
         bases = [
-            Path(r"D:\app1\AstrBot\data\plugin_data\meme_manager\packs"),
-            Path(__file__).resolve().parent.parent / "meme_manager" / "packs",
+            data_dir / "plugin_data" / "meme_manager" / "packs",
+            plugins_dir / "meme_manager" / "packs",
+            data_dir / "plugins" / "meme_manager" / "packs",
         ]
         return [b for b in bases if b.is_dir()]
-
-    STICKER_EXTS = (".gif", ".png", ".jpg", ".jpeg", ".webp", ".bmp")
-
-    def _sticker_index(self) -> dict[str, list[Path]]:
-        """把**所有图包**的 memes/<分类>/* 建成索引：分类名 → 文件列表。"""
-
-        index: dict[str, list[Path]] = {}
-        for root in self._sticker_roots():
-            for memes in root.glob("*/memes"):
-                if not memes.is_dir():
-                    continue
-                for cat_dir in memes.iterdir():
-                    if not cat_dir.is_dir():
-                        continue
-                    files = [
-                        f
-                        for f in cat_dir.iterdir()
-                        if f.is_file() and f.suffix.lower() in self.STICKER_EXTS
-                    ]
-                    if files:
-                        index.setdefault(cat_dir.name.strip().lower(), []).extend(files)
-        return index
-
-    def _to_jpeg(self, src: Path) -> str:
-        """任意格式（gif/webp/png…）→ JPEG；QZone 那边上传 JPEG 最稳，动图也不行。"""
-
-        if src.suffix.lower() in (".jpg", ".jpeg"):
-            return str(src)
-        try:
-            from PIL import Image
-
-            out = Path(self.data_dir) / "sticker_tmp.jpg"
-            with Image.open(src) as im:
-                im.seek(0)  # 动图只取第一帧
-                frame = im.convert("RGB")
-                w, h = frame.size
-                scale = min(1.0, 1080 / max(w, h))
-                if scale < 1.0:
-                    frame = frame.resize((int(w * scale), int(h * scale)))
-                frame.save(out, "JPEG", quality=88)
-            return str(out)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[QzoneKit] 转 JPEG 失败，改用原图：%s（%s）", src, exc)
-            return str(src)
-
-    STICKER_HINTS = {
-        "happy": ("开心", "高兴", "笑", "爽", "棒", "夸", "顺利", "搞定", "成了", "好耶"),
-        "angry": ("生气", "烦", "气死", "崩", "讨厌", "吵", "骂"),
-        "sad": ("难过", "委屈", "累", "想哭", "不开心", "低落", "emo"),
-        "sleep": ("困", "睡", "熬夜", "躺", " sleepy"),
-        "food": ("吃", "饭", "奶茶", "饿", "馋", "夜宵"),
-        "shy": ("害羞", "脸红", "不好意思", "心虚"),
-        "confused": ("迷惑", "不懂", "为什么", "问号", "晕"),
-        "surprised": ("惊讶", "惊", "吓", "没想到"),
-        "work": ("干活", "工作", "写代码", "调试", "加班", "摸鱼", "bug"),
-        "teasing": ("自嘲", "嫌弃", "反讽", "笑死"),
-        "greeting": ("你好", "早上好", "晚安", "来了"),
-        "affection": ("喜欢", "贴贴", "抱", "谢谢", "温柔"),
-    }
-
-    def _guess_category(self, text: str) -> str:
-        """按文字里的关键词猜一个表情包分类；猜不到给空串（= 全图包随机）。"""
-
-        low = str(text or "").lower()
-        for cat, words in self.STICKER_HINTS.items():
-            if any(w in low for w in words):
-                return cat
-        return ""
 
     def _pick_sticker(self, category: str) -> str:
         """从**所有**表情包图包里挑一张；挑不到就返回空串。"""
@@ -936,6 +877,49 @@ class QzoneKitPlugin(Star):
         logger.info("[QzoneKit] 说说已发（%s 字）：%s", len(text), text[:60])
         return True, ""
 
+    async def _select_fragments(
+        self, fragments: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """攒得太多时先挑：重要的先发，太旧又不重要的不发。
+
+        只有条数 ≥ select_threshold 才会走这里；没超就直接全发。
+        """
+
+        if len(fragments) < self.select_threshold:
+            return fragments
+
+        now = time.time()
+        lines = []
+        for i, f in enumerate(fragments):
+            age_h = max(0.0, (now - float(f.get("at") or now)) / 3600.0)
+            lines.append(
+                f"{i}. 距现在 {age_h:.0f} 小时｜重要度={f.get('importance', 'normal')}｜{str(f.get('text') or '')[:60]}"
+            )
+        prompt = (
+            "下面是她攒着想发到 QQ 空间的内容。现在要发车了，但她这次不想全发。\n"
+            "请挑出**最值得现在发**的："            
+            f"最多 {self.publish_max} 条；重要性高的优先，距现在太久又无关紧要的可以舍弃。\n"
+            "只输出 JSON：{\"keep\": [下标...], \"reason\": \"一句话\"}\n\n" + "\n".join(lines)
+        )
+        try:
+            reply = await self._llm(prompt)
+            data = self._parse_json(reply) or {}
+            keep = data.get("keep")
+            if isinstance(keep, list):
+                idxs = sorted({int(x) for x in keep if str(x).lstrip("-").isdigit()})
+                picked = [fragments[i] for i in idxs if 0 <= i < len(fragments)]
+                if picked:
+                    if len(picked) < len(fragments):
+                        dropped = len(fragments) - len(picked)
+                        logger.info(
+                            "[QzoneKit] 攒了 %s 条，筛掉 %s 条，这次发 %s 条（%s）",
+                            len(fragments), dropped, len(picked), data.get("reason", ""),
+                        )
+                    return picked[: self.publish_max]
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[QzoneKit] 筛选失败（%s），按时间取最近的几条", exc)
+        return fragments[-self.publish_max :]
+
     async def _merge_fragments(self, fragments: list[dict[str, Any]]) -> str:
         """把攒着的几段合成一条说说；模型不给力就直接用换行拼。"""
 
@@ -974,7 +958,10 @@ class QzoneKitPlugin(Star):
         pending = list(self.state.get("post", {}).get("pending") or [])
 
         if left <= 0:
-            body = await self._merge_fragments(pending + [{"text": text, "importance": importance}])
+            batch = await self._select_fragments(
+                pending + [{"text": text, "importance": importance, "at": now}]
+            )
+            body = await self._merge_fragments(batch)
             img = self._pick_sticker(sticker) if sticker else ""  # 带分类时优先，否则交给外层包装按概率补
             if self.dry_run:
                 logger.info(
@@ -1032,7 +1019,8 @@ class QzoneKitPlugin(Star):
         post = self.state.get("post", {})
         pending_post = post.get("pending") or []
         if pending_post and now >= float(post.get("pending_due") or 0):
-            body = await self._merge_fragments(pending_post)
+            batch = await self._select_fragments(pending_post)
+            body = await self._merge_fragments(batch)
             if body:
                 ok, err = await self._publish(body)
                 if ok:

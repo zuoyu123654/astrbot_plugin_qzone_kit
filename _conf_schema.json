@@ -103,5 +103,15 @@
     "type": "float",
     "description": "保底：多少天没发说说，就要求她「这一轮必须发一条」（没有大事就写点日常）。默认 3 天。",
     "default": 3
+  },
+  "post_select_threshold": {
+    "type": "int",
+    "description": "攒到几条才做「筛选」：条数达到这个数，发之前会按重要性排序、太旧又不重要的就不发（默认 3）。",
+    "default": 3
+  },
+  "post_publish_max": {
+    "type": "int",
+    "description": "筛选之后这一条最多发几段（默认 2）。没超过筛选阈值时不受这个限制。",
+    "default": 2
   }
 }
