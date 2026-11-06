@@ -1501,39 +1501,98 @@ class QzoneKitPlugin(Star):
         return out
 
     def _v2_fallback(self, con) -> list[str]:
-        """V2 兜底：直接找状态类表，取最新一行的 record_json。"""
+        """V2（7.x）状态：日历 + 日记/梦境 + 角色状态记录。"""
 
         out: list[str] = []
         try:
-            tables = [r[0] for r in con.execute(
-                "select name from sqlite_master where type='table'")]
+            tables = {r[0] for r in con.execute(
+                "select name from sqlite_master where type='table'")}
         except Exception:  # noqa: BLE001
             return out
-        pat = re.compile(
-            r"(role_state|calendar|role_journal|relationship|emotion|mood|dream|diary)", re.I)
-        for table in [x for x in tables if pat.search(x)][:6]:
+
+        def latest_json(table: str, *cols):
             try:
-                row = con.execute(f"select * from {table} order by rowid desc limit 1").fetchone()
+                row = con.execute(
+                    f"select * from {table} order by rowid desc limit 1").fetchone()
                 if not row:
-                    continue
-                cols = [d[0] for d in con.execute(f"select * from {table} limit 1").description]
+                    return None
+                names = [d[0] for d in con.execute(
+                    f"select * from {table} limit 1").description]
+                return dict(zip(names, row))
             except Exception:  # noqa: BLE001
-                continue
-            for c, v in zip(cols, row):
-                if isinstance(v, str) and v.strip().startswith("{"):
+                return None
+
+        # ① 日历/日程（她今天在做什么）
+        if "calendar_records" in tables:
+            try:
+                rows = con.execute(
+                    "select record_json from calendar_records order by updated_at desc limit 3"
+                ).fetchall()
+                for (raw,) in rows:
+                    obj = json.loads(raw)
+                    kind = obj.get("kind") or ""
+                    detail = obj.get("detail") or ""
+                    sched = obj.get("schedule") or {}
+                    who = (obj.get("presence") or {}).get("mode") or ""
+                    piece = "；".join(
+                        x for x in (f"kind={kind}" if kind else "",
+                                    f"detail={str(detail)[:40]}" if detail else "",
+                                    f"presence={who}" if who else "") if x)
+                    if piece:
+                        out.append(f"[日程] {piece}"[:140])
+            except Exception:  # noqa: BLE001
+                pass
+
+        # ② 日记 / 梦境（迁移过来的核心档案）
+        if "role_journals" in tables:
+            try:
+                rows = con.execute(
+                    "select kind, local_date, content_json from role_journals "
+                    "order by updated_at desc limit 4").fetchall()
+                for kind, day, raw in rows:
                     try:
-                        obj = json.loads(v)
+                        obj = json.loads(raw)
                     except Exception:  # noqa: BLE001
                         continue
+                    draft = obj.get("draft") or {}
+                    summary = draft.get("summary") or draft.get("text") or ""
+                    form = draft.get("form") or ""
+                    if summary:
+                        lab = {"dream": "梦", "diary": "日记"}.get(str(kind), str(kind))
+                        out.append(
+                            f"[{lab} {day}] {str(summary)[:100]}" + (f"（{form}）" if form else ""))
+            except Exception:  # noqa: BLE001
+                pass
+
+        # ③ 日记素材（她今天干了什么）
+        if "role_journal_derivatives" in tables and len(out) < 6:
+            try:
+                row = con.execute(
+                    "select record_json from role_journal_derivatives "
+                    "order by rowid desc limit 1").fetchone()
+                if row:
+                    obj = json.loads(row[0])
+                    mat = obj.get("material") or {}
+                    s = mat.get("summary") or ""
+                    if s:
+                        out.append(f"[素材] {str(s)[:100]}")
+            except Exception:  # noqa: BLE001
+                pass
+
+        # ④ 角色状态记录（V2 若已写入，这段最值钱）
+        if "role_state_records" in tables and len(out) < 7:
+            got = latest_json("role_state_records")
+            if got and got.get("record_json"):
+                try:
+                    obj = json.loads(got["record_json"])
                     flat = self._flatten(obj)
                     if flat:
-                        out.append(f"[{table}] " + "；".join(flat[:4])[:130])
-                elif isinstance(v, (str, int, float)) and len(str(v)) <= 40:
-                    if c.lower() in ("state", "status", "mood", "phase", "label", "value"):
-                        out.append(f"[{table}] {c}={v}")
-            if len(out) >= 4:
-                break
-        return out
+                        out.append("[状态] " + "；".join(flat[:5])[:120])
+                except Exception:  # noqa: BLE001
+                    pass
+
+        return out[:7]
+
 
     def _extract_dir_state(self, pdir: Path) -> list[str]:
         """从一个插件的 plugin_data 目录里读状态（不挑文件名，版本无关）。"""
