@@ -1456,7 +1456,7 @@ class QzoneKitPlugin(Star):
                 "select name from sqlite_master where type='table'")]
             scored = [(self._state_score(t), t) for t in tables]
             scored = sorted([x for x in scored if x[0] > 0], reverse=True)
-            for _sc, table in scored[:3]:
+            for _sc, table in scored[:12]:
                 try:
                     cols = [r[1] for r in con.execute(f"PRAGMA table_info({table})")]
                     row = con.execute(
@@ -1491,11 +1491,48 @@ class QzoneKitPlugin(Star):
                         out.append(f"[{db.stem}:{table}] " + "；".join(pairs[:5])[:150])
                 except Exception:  # noqa: BLE001
                     continue
+            if not out:
+                out.extend(self._v2_fallback(con))
         finally:
             try:
                 con.close()
             except Exception:  # noqa: BLE001
                 pass
+        return out
+
+    def _v2_fallback(self, con) -> list[str]:
+        """V2 兜底：直接找状态类表，取最新一行的 record_json。"""
+
+        out: list[str] = []
+        try:
+            tables = [r[0] for r in con.execute(
+                "select name from sqlite_master where type='table'")]
+        except Exception:  # noqa: BLE001
+            return out
+        pat = re.compile(
+            r"(role_state|calendar|role_journal|relationship|emotion|mood|dream|diary)", re.I)
+        for table in [x for x in tables if pat.search(x)][:6]:
+            try:
+                row = con.execute(f"select * from {table} order by rowid desc limit 1").fetchone()
+                if not row:
+                    continue
+                cols = [d[0] for d in con.execute(f"select * from {table} limit 1").description]
+            except Exception:  # noqa: BLE001
+                continue
+            for c, v in zip(cols, row):
+                if isinstance(v, str) and v.strip().startswith("{"):
+                    try:
+                        obj = json.loads(v)
+                    except Exception:  # noqa: BLE001
+                        continue
+                    flat = self._flatten(obj)
+                    if flat:
+                        out.append(f"[{table}] " + "；".join(flat[:4])[:130])
+                elif isinstance(v, (str, int, float)) and len(str(v)) <= 40:
+                    if c.lower() in ("state", "status", "mood", "phase", "label", "value"):
+                        out.append(f"[{table}] {c}={v}")
+            if len(out) >= 4:
+                break
         return out
 
     def _extract_dir_state(self, pdir: Path) -> list[str]:
