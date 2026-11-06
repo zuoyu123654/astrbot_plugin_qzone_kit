@@ -143,5 +143,10 @@
     "type": "float",
     "description": "判断间隔的浮动比例（0.35 = 基准 45 分钟上下浮动 35%，即约 29~61 分钟随机）。",
     "default": 0.35
+  },
+  "require_admin": {
+    "type": "bool",
+    "description": "安全默认：开着时，只有管理员（或 owner_uids 里的人）能让她删说说/改资料。建议保持开启。",
+    "default": true
   }
 }
