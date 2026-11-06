@@ -1298,6 +1298,83 @@ class QzoneKitPlugin(Star):
         plugins_dir = Path(__file__).resolve().parent.parent
         return [plugins_dir.parent / "plugin_data"]
 
+    # V1 里「迁不走但在用」的字段：导出成我们自己的快照
+    V1_SNAPSHOT_KEYS = (
+        "daily_state", "state_conditions", "body_cycle_state", "current_interaction",
+        "daily_story_plan", "personal_goal_state", "personal_goals",
+        "daily_weather", "qweather_location", "qq_presence_state",
+        "bot_diaries", "dream_fragments", "daily_dream", "persona_lifecycle",
+        "unified_person", "can_do", "important_dates", "relationship_ledger",
+        "relationship_daily_totals", "last_emotion_event", "skill_growth",
+    )
+
+    def _snapshot_path(self) -> Path:
+        return Path(self.data_dir) / "v1_snapshot.json"
+
+    def _v1_snapshot_bridge(self, found: list[str]) -> list[str]:
+        """V1 还在 → 刷新快照；V1 没了 → 用快照。返回应追加的条目。"""
+
+        try:
+            data_dir = Path(__file__).resolve().parent.parent.parent / "plugin_data" / "astrbot_plugin_private_companion"
+            comp = data_dir / "companions.json"
+            snap = self._snapshot_path()
+            if comp.is_file():
+                try:
+                    data = json.loads(comp.read_text(encoding="utf-8", errors="ignore"))
+                    picked = {}
+                    for key in self.V1_SNAPSHOT_KEYS:
+                        if key in data and data[key]:
+                            picked[key] = data[key]
+                    users = data.get("users") or {}
+                    rec = None
+                    for _u, item in users.items():
+                        if isinstance(item, dict) and str(item.get("relationship_role") or "") == "owner":
+                            rec = item
+                            break
+                    if rec is None and users:
+                        rec = next((v for v in users.values() if isinstance(v, dict)), None)
+                    if isinstance(rec, dict):
+                        picked["owner_brief"] = {
+                            k: rec.get(k) for k in (
+                                "nickname", "relationship_role", "relationship_mode",
+                                "current_interaction", "relationship_daily_totals",
+                                "last_emotion_event", "last_seen", "last_user_message",
+                            ) if rec.get(k) not in (None, "", [], {})
+                        }
+                    snap.write_text(json.dumps(
+                        {"saved_at": time.time(), "source": str(comp), "data": picked},
+                        ensure_ascii=False, indent=1), encoding="utf-8")
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("[QzoneKit] 快照刷新失败：%s", exc)
+
+            if not snap.is_file():
+                return []
+
+            blob = json.loads(snap.read_text(encoding="utf-8"))
+            data = blob.get("data") or {}
+            out: list[str] = []
+            for key, value in data.items():
+                if key == "owner_brief" and isinstance(value, dict):
+                    ci = value.get("current_interaction") or {}
+                    if isinstance(ci, dict) and ci.get("label"):
+                        out.append(f"互动状态={ci.get('label')}")
+                    role = value.get("relationship_role")
+                    if role:
+                        out.append(f"关系={role}/{value.get('relationship_mode', '')}")
+                    dt = value.get("relationship_daily_totals") or {}
+                    if isinstance(dt, dict) and dt:
+                        out.append(f"今日互动 正{dt.get('positive', 0)}/负{dt.get('negative', 0)}")
+                    continue
+                flat = self._flatten(value)
+                if flat:
+                    out.append(f"[快照] {key}: " + "；".join(flat[:3])[:110])
+                if len(out) >= 6:
+                    break
+            return out
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[QzoneKit] 快照桥跳过：%s", exc)
+            return []
+
     def _state_dirs(self) -> list[Path]:
         """找出该读哪些插件的 plugin_data 目录（不写死目录名）。"""
 
@@ -1683,6 +1760,10 @@ class QzoneKitPlugin(Star):
             if len(found) >= 16:
                 break
 
+        try:
+            found = self._v1_snapshot_bridge(found) + found
+        except Exception:  # noqa: BLE001
+            pass
         seen, out = set(), []
         for item in found:
             if item not in seen:
@@ -1698,7 +1779,7 @@ class QzoneKitPlugin(Star):
                 "请把它的 plugin_data 文件列表发我，我按新结构适配。",
                 "、".join(names) or "无",
             )
-        return out[:12]
+        return out[:14]
 
     async def _persona_block(self) -> str:
         """取当前默认人格的名字和风格提示（截断，避免把整段人格塞进判断）。"""
