@@ -83,7 +83,7 @@ B. 要不要发一条 QQ 空间说说？
   把今天过成什么样了；**但别写成抱怨被冷落**，也别每轮都写「没人理我」，
   同一个意思值发一次就够了。
 
-- 时间必须和【现在时间】对得上：傍晚就别写"半夜"，上午别写"刚睡醒的夜"。
+- 时间必须和【现在时间】对得上：用【现在时间】括号里给的称呼（那几个都可以用，挑自然的），**不要用范围外的时段**（比如 18:39 不能说半夜、凌晨；凌晨也不能说成傍晚）。
 
 重要程度分三档：
   normal    = 有意思，但不急
@@ -1959,30 +1959,41 @@ class QzoneKitPlugin(Star):
         except Exception:  # noqa: BLE001
             return ""
 
-    def _period_name(self, hour: int) -> str:
-        if hour < 5:
-            return "深夜"
-        if hour < 8:
-            return "清晨"
-        if hour < 11:
-            return "上午"
-        if hour < 13:
-            return "中午"
-        if hour < 17:
-            return "下午"
-        if hour < 19:
-            return "傍晚"
-        if hour < 22:
-            return "夜里"
-        return "深夜"
+    TIME_BANDS = (
+        # (起始分钟, 主称呼, 可以说……)
+        (0,     "凌晨", ("凌晨", "半夜", "后半夜", "深夜")),
+        (300,   "清晨", ("清晨", "天刚亮", "早上")),
+        (420,   "早上", ("早上", "早晨", "上午早一点")),
+        (540,   "上午", ("上午", "晌午前", "快到中午")),
+        (660,   "中午", ("中午", "正午", "午饭点")),
+        (780,   "午后", ("午后", "下午刚过", "下午早些")),
+        (900,   "下午", ("下午", "下午茶时间")),
+        (1020,  "傍晚", ("傍晚", "天快黑", "日头偏西")),
+        (1110,  "入夜", ("入夜", "天黑了", "晚上刚开始")),
+        (1200,  "晚上", ("晚上", "夜里", "晚上这会儿")),
+        (1320,  "深夜", ("深夜", "夜已深", "快该睡了")),
+        (1410,  "半夜", ("半夜", "深夜", "这个时候")),
+    )
+
+    def _time_band(self, hour: int, minute: int) -> tuple[str, tuple[str, ...]]:
+        """返回 (主称呼, 可用说法)。按 5 分钟粒度分档，晚上切得细。"""
+
+        m = hour * 60 + minute
+        main, words = self.TIME_BANDS[0][1], self.TIME_BANDS[0][2]
+        for start, label, aliases in self.TIME_BANDS:
+            if m >= start:
+                main, words = label, aliases
+        return main, words
 
     def _now_block(self) -> str:
         now = datetime.now()
         weekdays = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
+        main, words = self._time_band(now.hour, now.minute)
         return (
             f"现在时间：{now.strftime('%Y-%m-%d %H:%M')} {weekdays[now.weekday()]}"
-            f"（{self._period_name(now.hour)}）"
+            f"（{main}；这时候可以叫：{'、'.join(words)}）"
         )
+
 
     async def _state_block(self) -> str:
         """拼一段「她现在的状态」给判断用：人格 + 别的插件里的情绪/好感。"""
