@@ -27,7 +27,7 @@ desc: >-
   「请帮我配置好 AstrBot 里的【空间小助手】插件，并验证是否可用。」
 
   AI 会按 SETUP-FOR-AI.md 配好参数、冷却、表情包，并验证发说说/改签名/删说说都能用。
-version: 0.8.2
+version: 0.8.3
 author: paopao
 repo: https://github.com/zuoyu123654/astrbot_plugin_qzone_kit
 astrbot_version: ">=4.17.0"

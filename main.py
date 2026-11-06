@@ -83,6 +83,8 @@ B. 要不要发一条 QQ 空间说说？
   把今天过成什么样了；**但别写成抱怨被冷落**，也别每轮都写「没人理我」，
   同一个意思值发一次就够了。
 
+- 时间必须和【现在时间】对得上：傍晚就别写"半夜"，上午别写"刚睡醒的夜"。
+
 重要程度分三档：
   normal    = 有意思，但不急
   important = 挺重要（心情明显波动、确实有新目标/大事）
@@ -389,6 +391,19 @@ class QzoneKitPlugin(Star):
         raise RuntimeError("找不到可用的 OneBot 接口（QQ空间插件没启用？）")
 
     def _is_owner(self, event: AstrMessageEvent) -> bool:
+        ok = self._is_owner_raw(event)
+        if not ok:
+            try:
+                logger.warning(
+                    "[QzoneKit] 拒绝对该用户执行（sender=%s require_admin=%s owner_uids=%s）",
+                    event.get_sender_id() if hasattr(event, "get_sender_id") else "?",
+                    getattr(self, "require_admin", None), self.owner_uids,
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        return ok
+
+    def _is_owner_raw(self, event: AstrMessageEvent) -> bool:
         if not self.owner_uids:
             return True
         sender = str(getattr(event, "get_sender_id", lambda: "")() or "")
@@ -1191,7 +1206,7 @@ class QzoneKitPlugin(Star):
                 pending + [{"text": text, "importance": importance, "at": now}]
             )
             body = await self._merge_fragments(batch)
-            img = self._pick_sticker(sticker) if sticker else ""  # 带分类时优先，否则交给外层包装按概率补
+            img = self._pick_sticker(sticker or "")  # 没命中分类也走全库随机（概率在 _pick_sticker 里）
             if self.dry_run:
                 logger.info(
                     "[QzoneKit][试运行] 本来要发说说（%s 字，%s）→ %s%s",
@@ -1944,12 +1959,37 @@ class QzoneKitPlugin(Star):
         except Exception:  # noqa: BLE001
             return ""
 
+    def _period_name(self, hour: int) -> str:
+        if hour < 5:
+            return "深夜"
+        if hour < 8:
+            return "清晨"
+        if hour < 11:
+            return "上午"
+        if hour < 13:
+            return "中午"
+        if hour < 17:
+            return "下午"
+        if hour < 19:
+            return "傍晚"
+        if hour < 22:
+            return "夜里"
+        return "深夜"
+
+    def _now_block(self) -> str:
+        now = datetime.now()
+        weekdays = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
+        return (
+            f"现在时间：{now.strftime('%Y-%m-%d %H:%M')} {weekdays[now.weekday()]}"
+            f"（{self._period_name(now.hour)}）"
+        )
+
     async def _state_block(self) -> str:
         """拼一段「她现在的状态」给判断用：人格 + 别的插件里的情绪/好感。"""
 
         if not self.read_plugin_state:
             return "（已关闭状态读取）"
-        parts: list[str] = []
+        parts: list[str] = [self._now_block()]
         persona = await self._persona_block()
         if persona:
             parts.append("人格：" + persona)
