@@ -1,5 +1,10 @@
 # 空间小助手（astrbot_plugin_qzone_kit）
 
+> ⚠️ **关于配图**：Windows 上带图发说说需要 QQ空间插件（上游）修一个路径判断 bug 才能正常工作。
+> 优先给上游提 issue/PR；**不建议长期本地改别人插件源码**（升级会被覆盖）。
+> 详见 `SETUP-FOR-AI.md` 第 4 节；不想动上游就把 `post_sticker_enabled` 关掉，纯文字说说一切正常。
+
+
 > ⚠️ **隐私说明（请先看）**：本插件会在本地缓存**最近 40 条左右的聊天文本**
 > （`data/plugin_data/astrbot_plugin_qzone_kit/state.json` 的 `recent` 字段），
 > 用来判断「她现在的状态要不要换签名 / 值不值得发说说」。这些文本**只存在你本机**，

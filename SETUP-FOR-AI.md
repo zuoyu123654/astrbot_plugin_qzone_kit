@@ -131,7 +131,7 @@ Added llm tool: qzone_delete_feeds / qq_profile_update / qzone_post_summary
 
 ---
 
-## 4. 必做补丁：让「带图说说」真的能发（不改就会 0 张图）
+## 4. 带图说说为什么会 0 张图（上游 bug + 本地绕过方案）
 
 **症状**：说说发出去了但没图；日志里
 
@@ -141,42 +141,44 @@ Added llm tool: qzone_delete_feeds / qq_profile_update / qzone_post_summary
 [诊断] 带图发布：ok=False code=-10061 data='{}'
 ```
 
-**根因**：QQ空间插件的 `core/qzone/utils.py` 里 `download_file()` 用 `urlparse` 判断「本地路径还是 URL」。
-Windows 盘符路径 `D:\xxx.jpg` 会被解析成 **scheme="d"**，于是走到「不支持的协议」分支 → 返回 None →
+**根因**：QQ空间插件 `core/qzone/utils.py` 的 `download_file()` 用 `urlparse` 判断"本地路径还是 URL"。
+Windows 盘符路径 `D:\xxx.jpg` 会被解析成 **scheme="d"**，于是走到"不支持的协议"分支 → 返回 None →
 0 张图 → 发布时 `pic_bo` 为空 → QQ 返回 `code=-10061`。
 
-**修法**（改 QQ空间插件，改前备份）：
+### 推荐做法：先向上游反馈 / 提 PR
 
-文件：`<AstrBot>/data/plugins/astrbot_plugin_qzone/core/qzone/utils.py`
+这个问题在 **QQ空间插件**（`astrbot_plugin_qzone`）里，不是本插件的 bug。优先级从高到低：
 
-在 `async def download_file(source: str) -> bytes | None:` 里，`try:` 之后、`parsed = urlparse(source)` 之前插入：
+1. **给上游提 issue/PR**（最推荐）：把上面的根因和复现步骤贴过去，建议它在 `download_file()` 里
+   **先判断本地文件是否存在**（`os.path.isfile`），存在就直接读文件，再回退到 URL 解析
+2. **等上游修**：修好后本插件不需要任何改动，配图自然恢复
+3. **本地临时绕过（有风险，见下）**：自己改第三方插件源码
+
+### 本地临时绕过（仅在 1、2 都等不了时）
+
+> ⚠️ **风险提示（请先读）**
+> - 这会修改**别人的插件**：上游升级时会被覆盖，升级后要重新打
+> - 改坏了会影响 QQ空间插件**所有**功能（不只是本插件的配图）
+> - 不是本插件维护范围：出问题请先还原备份、再向上游反馈
+> - **动手前必须备份**：`utils.py` → `utils.py.bak`
+
+改法：在 `download_file()` 最前面加"本地文件优先"判断——**已存在文件就直接读，不做 url 解析**：
 
 ```python
-    # 先当本地文件试：Windows 盘符路径会被 urlparse 误判成协议，导致永远 0 张图
+# 改前备份：core/qzone/utils.py → utils.py.bak
+def download_file(url: str):
+    # PATCH-BY-USER: 本地绝对路径优先（Windows 盘符会被 urlparse 误判成 scheme）
     try:
-        _local = Path(source)
-        if _local.is_file():
-            return await asyncio.to_thread(_local.read_bytes)
-    except OSError:
+        if isinstance(url, str) and os.path.isfile(url):
+            return Path(url).read_bytes()
+    except Exception:
         pass
+    # ...原有 urlparse 逻辑保持不变...
 ```
 
-（`Path`/`asyncio` 那个文件里本来就 import 过了。）
+改完**必须整进程重启 AstrBot**，再发一条带图说说验证；不行就还原备份。
 
-改完**完整重启 AstrBot**，再按 5.3 跑一次带图测试，日志应该变成：
-
-```
-[诊断] 规范化后 1 张图，大小=[18641] 字节
-[诊断] 上传第 1 张：ok=True code=0 data={'data': {'pre': 'http://photogzmaz.photo.store.qq.com/...'}}
-[QzoneKit] 说说已发（122 字）
-```
-
-并且 `data/plugin_data/astrbot_plugin_qzone/posts_*.db` 里那行 `images` 不再是 `[]`。
-
-> 不要试图给 `publish_post(images=[bytes])` 传 bytes —— `Post` 模型只收 `list[str]`，
-> 会报 `1 validation error for Post`。只能传路径，所以这个补丁是绕不过去的。
-
----
+> 如果你不想动别人代码：把 `post_sticker_enabled` 关掉，只用纯文字说说——功能不受影响，只是没有配图。
 
 ## 5. 验证（照顺序做，每步有判定）
 

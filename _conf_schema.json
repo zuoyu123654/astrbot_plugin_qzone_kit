@@ -148,5 +148,10 @@
     "type": "string",
     "description": "读哪个版本的陪伴插件状态：auto（自动，推荐，只读在用的那一个）/ v1（旧版 6.x）/ v2（新版 7.x）。只读一个，避免两套数据打架。",
     "default": "auto"
+  },
+  "state_read_all_files": {
+    "type": "bool",
+    "description": "默认关闭：只读已知状态文件（companions.json、*state*.json、*.sqlite3 等）。开启后会扫对方 plugin_data 里所有 json/db，可能读到敏感数据，非必要不要开。",
+    "default": false
   }
 }

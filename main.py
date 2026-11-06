@@ -192,6 +192,8 @@ class QzoneKitPlugin(Star):
         self.force_post_once = bool(cfg.get("test_force_post_once", False))
         # 是否能读「别的插件里的状态」（好感度/情绪/关系等）和人格
         self.read_plugin_state = bool(cfg.get("read_plugin_state", True))
+        # 是否允许读白名单以外的文件（默认 False，只读已知文件名）
+        self.state_read_all_files = bool(cfg.get("state_read_all_files", False))
         # 只读「用户正在用的那个版本」：auto 自动判断，v1 强制旧版，v2 强制新版
         self.state_source = str(cfg.get("state_source") or "auto").strip().lower()
         if self.state_source not in ("auto", "v1", "v2"):
@@ -1475,6 +1477,35 @@ class QzoneKitPlugin(Star):
         return False
 
 
+    # 只读这些文件名（默认），避免把别人 plugin_data 里所有 json/db 都翻一遍
+    STATE_FILE_WHITELIST = (
+        "companions.json",
+        "*relationship_phase.json",
+        "*sleep_state.json",
+        "*emotion*.json",
+        "*mood*.json",
+        "*state*.json",
+        "*diary*.json",
+        "*dream*.json",
+        "*.sqlite3",
+    )
+
+    def _file_allowed(self, path: Path) -> bool:
+        if bool(getattr(self, "state_read_all_files", False)):
+            return True
+        name = path.name.lower()
+        for pat in self.STATE_FILE_WHITELIST:
+            p = pat.lower()
+            if p.startswith("*") and p.endswith(".json"):
+                if name.endswith(p[1:]) or name == p[1:]:
+                    return True
+            elif p.endswith("*"):
+                if name.startswith(p[:-1]):
+                    return True
+            elif name == p:
+                return True
+        return False
+
     def _state_dirs(self) -> list[Path]:
         """找出该读哪些插件的 plugin_data 目录（不写死目录名）。"""
 
@@ -1790,6 +1821,7 @@ class QzoneKitPlugin(Star):
                 f
                 for f in pdir.rglob("*.json")
                 if f.is_file() and f.stat().st_size <= 3 * 1024 * 1024
+                and self._file_allowed(f)
             ]
         except Exception:  # noqa: BLE001
             candidates = []
@@ -1814,7 +1846,7 @@ class QzoneKitPlugin(Star):
         if not want_v2:
             return out
         try:
-            for db in list(pdir.rglob("*.db")) + list(pdir.rglob("*.sqlite")) + list(pdir.rglob("*.sqlite3")):
+            for db in [x for x in list(pdir.rglob("*.db")) + list(pdir.rglob("*.sqlite")) + list(pdir.rglob("*.sqlite3")) if self._file_allowed(x)]:
                 if db.is_file():
                     db_out.extend(self._extract_sqlite_state(db))
                     if len(db_out) >= 8:
