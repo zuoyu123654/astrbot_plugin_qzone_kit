@@ -334,6 +334,10 @@ class QzoneKitPlugin(Star):
                 logger.info("[QzoneKit] 状态来源：%s", "、".join(srcs) or "（没找到）")
             except Exception as exc:  # noqa: BLE001
                 logger.warning("[QzoneKit] 状态来源探测失败：%s", exc)
+        try:
+            logger.info("[QzoneKit] 依赖检查：%s", "；".join(self._partner_report()))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[QzoneKit] 依赖检查失败：%s", exc)
         logger.info(
             "[QzoneKit] 开关：每天自动发说说=%s｜自动改签名=%s｜自动发说说=%s｜配图=%s(%.0f%%)",
             self.daily_post,
@@ -388,7 +392,48 @@ class QzoneKitPlugin(Star):
                     return await bot.call_action(action, **kwargs)
         except Exception as exc:  # noqa: BLE001
             logger.warning("[QzoneKit] 平台实例取不到：%s", exc)
-        raise RuntimeError("找不到可用的 OneBot 接口（QQ空间插件没启用？）")
+        raise RuntimeError("找不到可用的 OneBot 接口。" + self._partner_fail_hint())
+
+    # 依赖插件：名字 → (需要的能力属性, 本插件测试过的版本)
+    PARTNER_SPECS = {
+        QZONE_PLUGIN: {"attrs": ("service", "cfg"), "tested": ">=1.0"},
+        QQPROFILE_STATUS: {"attrs": (), "tested": ">=1.1"},
+    }
+
+    def _plugin_version(self, name: str) -> str:
+        try:
+            meta = Path(__file__).resolve().parent.parent / name / "metadata.yaml"
+            if not meta.is_file():
+                return ""
+            for line in meta.read_text(encoding="utf-8", errors="ignore").splitlines():
+                if line.startswith("version:"):
+                    return line.split(":", 1)[1].strip().strip('"')
+        except Exception:  # noqa: BLE001
+            pass
+        return ""
+
+    def _partner_report(self) -> list[str]:
+        """检查依赖插件：在不在、什么版本、必需属性有没有。"""
+
+        rows: list[str] = []
+        for name, spec in self.PARTNER_SPECS.items():
+            inst = self._star(name)
+            version = self._plugin_version(name) or "未知"
+            if inst is None:
+                rows.append(f"{name}=缺失")
+                continue
+            missing = [a for a in spec["attrs"] if not hasattr(inst, a)]
+            if missing:
+                rows.append(f"{name}={version}（缺 {','.join(missing)}，可能版本不兼容）")
+            else:
+                rows.append(f"{name}={version}")
+        return rows
+
+    def _partner_fail_hint(self) -> str:
+        try:
+            return "依赖状态：" + "；".join(self._partner_report())
+        except Exception:  # noqa: BLE001
+            return "依赖状态：取不到"
 
     def _is_owner(self, event: AstrMessageEvent) -> bool:
         ok = self._is_owner_raw(event)
@@ -432,14 +477,14 @@ class QzoneKitPlugin(Star):
             base = Path(__file__).resolve().parent.parent / QQPROFILE_STATUS / "status.py"
             if not base.exists():
                 return fallback
-            spec = importlib.util.spec_from_file_location("_qqprofile_status", base)
-            if spec is None or spec.loader is None:
-                return fallback
-            mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)
-            mapping = getattr(mod, "status_mapping", None)
-            if isinstance(mapping, dict) and mapping:
+            # 只解析文本，不执行第三方模块代码
+            text = base.read_text(encoding="utf-8", errors="ignore")
+            pairs = re.findall(
+                r'"([^"\n]{1,16})"\s*:\s*\(\s*(-?\d+)\s*,\s*(-?\d+)\s*\)', text)
+            mapping = {name: (int(a), int(b)) for name, a, b in pairs}
+            if mapping:
                 return mapping
+            logger.warning("[QzoneKit] qqprofile 状态表解析为空，用内置的")
         except Exception as exc:  # noqa: BLE001
             logger.warning("[QzoneKit] 读状态表失败，用内置的：%s", exc)
         return fallback
