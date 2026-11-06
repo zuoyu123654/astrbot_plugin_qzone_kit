@@ -192,6 +192,10 @@ class QzoneKitPlugin(Star):
         self.force_post_once = bool(cfg.get("test_force_post_once", False))
         # 是否能读「别的插件里的状态」（好感度/情绪/关系等）和人格
         self.read_plugin_state = bool(cfg.get("read_plugin_state", True))
+        # 只读「用户正在用的那个版本」：auto 自动判断，v1 强制旧版，v2 强制新版
+        self.state_source = str(cfg.get("state_source") or "auto").strip().lower()
+        if self.state_source not in ("auto", "v1", "v2"):
+            self.state_source = "auto"
         raw_plugins = str(cfg.get("state_source_plugins", "") or "")
         self.state_plugins = [
             x.strip() for x in raw_plugins.replace("，", ",").split(",") if x.strip()
@@ -1375,6 +1379,46 @@ class QzoneKitPlugin(Star):
             logger.debug("[QzoneKit] 快照桥跳过：%s", exc)
             return []
 
+    def _read_targets(self) -> tuple[bool, bool]:
+        """返回 (读V1, 读V2)。只读一个版本，避免两套数据打架。"""
+
+        mode = getattr(self, "state_source", "auto")
+        if mode == "v1":
+            return True, False
+        if mode == "v2":
+            return False, True
+        # auto：V2 库里有活数据就认为用户在用新版
+        try:
+            for pdir in self._state_dirs():
+                for db in list(pdir.rglob("*.sqlite3")) + list(pdir.rglob("*.db")):
+                    try:
+                        import shutil as _sh
+                        import sqlite3 as _sq
+                        import tempfile as _tf
+
+                        tmp = Path(_tf.mkdtemp(prefix="qkit_probe_")) / db.name
+                        _sh.copy2(db, tmp)
+                        for sfx in ("-wal", "-shm"):
+                            side = Path(str(db) + sfx)
+                            if side.is_file():
+                                _sh.copy2(side, Path(str(tmp) + sfx))
+                        con = _sq.connect(str(tmp))
+                        try:
+                            tabs = {r[0] for r in con.execute(
+                                "select name from sqlite_master where type='table'")}
+                            for tb in ("role_state_records", "role_journals", "calendar_records"):
+                                if tb in tabs:
+                                    n = con.execute(f"select count(*) from {tb}").fetchone()[0]
+                                    if n > 0:
+                                        return False, True
+                        finally:
+                            con.close()
+                    except Exception:  # noqa: BLE001
+                        continue
+        except Exception:  # noqa: BLE001
+            pass
+        return True, False
+
     def _state_dirs(self) -> list[Path]:
         """找出该读哪些插件的 plugin_data 目录（不写死目录名）。"""
 
@@ -1531,6 +1575,8 @@ class QzoneKitPlugin(Star):
         try:
             tables = [r[0] for r in con.execute(
                 "select name from sqlite_master where type='table'")]
+            # 先走「按字段拆行」的专用读取（日历/日记/状态记录）
+            out.extend(self._v2_fallback(con))
             scored = [(self._state_score(t), t) for t in tables]
             scored = sorted([x for x in scored if x[0] > 0], reverse=True)
             for _sc, table in scored[:12]:
@@ -1657,21 +1703,28 @@ class QzoneKitPlugin(Star):
                 pass
 
         # ④ 角色状态记录（V2 若已写入，这段最值钱）
-        if "role_state_records" in tables and len(out) < 7:
+        if "role_state_records" in tables and len(out) < 8:
             got = latest_json("role_state_records")
             if got and got.get("record_json"):
                 try:
                     obj = json.loads(got["record_json"])
-                    flat = self._flatten(obj)
-                    if flat:
-                        out.append("[状态] " + "；".join(flat[:5])[:120])
+                    for key, val in obj.items():
+                        if str(key).startswith("_"):
+                            continue
+                        flat = self._flatten({key: val}) if not isinstance(val, (str, int, float)) else []
+                        if not flat and isinstance(val, (str, int, float)) and str(val).strip():
+                            flat = [f"{key}={val}"]
+                        if flat:
+                            out.append("[状态] " + "；".join(flat[:3])[:120])
+                        if len(out) >= 12:
+                            break
                 except Exception:  # noqa: BLE001
                     pass
 
         return out[:7]
 
 
-    def _extract_dir_state(self, pdir: Path) -> list[str]:
+    def _extract_dir_state(self, pdir: Path, want_v1: bool = True, want_v2: bool = True) -> list[str]:
         """从一个插件的 plugin_data 目录里读状态（不挑文件名，版本无关）。"""
 
         out: list[str] = []
@@ -1688,6 +1741,8 @@ class QzoneKitPlugin(Star):
         # 排序：文件名像状态的排前面
         candidates.sort(key=lambda f: -self._state_score(f.stem))
 
+        if not want_v1:
+            candidates = []
         for fp in candidates[:12]:
             try:
                 got = self._extract_json_state(fp)
@@ -1700,6 +1755,8 @@ class QzoneKitPlugin(Star):
 
         # 7.x（companion_v2）：sqlite 存状态（可能在 companion-7/installations/... 深层）
         db_out: list[str] = []
+        if not want_v2:
+            return out
         try:
             for db in list(pdir.rglob("*.db")) + list(pdir.rglob("*.sqlite")) + list(pdir.rglob("*.sqlite3")):
                 if db.is_file():
@@ -1735,10 +1792,12 @@ class QzoneKitPlugin(Star):
     def _scan_plugin_state(self) -> list[str]:
         """汇总所有状态来源；读不到就返回空，不影响判断。"""
 
+        want_v1, want_v2 = self._read_targets()
+        logger.debug("[QzoneKit] 状态来源选择：v1=%s v2=%s（配置 %s）", want_v1, want_v2, self.state_source)
         found: list[str] = []
         for pdir in self._state_dirs():
             try:
-                found.extend(self._extract_dir_state(pdir))
+                found.extend(self._extract_dir_state(pdir, want_v1, want_v2))
             except Exception:  # noqa: BLE001
                 pass
             # 通用兜底：这个目录里的小 json 再按关键词捞一遍
@@ -1761,7 +1820,8 @@ class QzoneKitPlugin(Star):
                 break
 
         try:
-            found = self._v1_snapshot_bridge(found) + found
+            if want_v1:
+                found = self._v1_snapshot_bridge(found) + found
         except Exception:  # noqa: BLE001
             pass
         seen, out = set(), []

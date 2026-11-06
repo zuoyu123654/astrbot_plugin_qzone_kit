@@ -143,5 +143,10 @@
     "type": "float",
     "description": "判断间隔的浮动比例（0.35 = 基准 45 分钟上下浮动 35%，即约 29~61 分钟随机）。",
     "default": 0.35
+  },
+  "state_source": {
+    "type": "string",
+    "description": "读哪个版本的陪伴插件状态：auto（自动，推荐，只读在用的那一个）/ v1（旧版 6.x）/ v2（新版 7.x）。只读一个，避免两套数据打架。",
+    "default": "auto"
   }
 }
