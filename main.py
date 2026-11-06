@@ -1379,24 +1379,18 @@ class QzoneKitPlugin(Star):
             logger.debug("[QzoneKit] 快照桥跳过：%s", exc)
             return []
 
-    def _read_targets(self) -> tuple[bool, bool]:
-        """返回 (读V1, 读V2)。只读一个版本，避免两套数据打架。"""
+    def _v2_state_rows(self) -> int:
+        """V2 里 role_state_records 有多少行（>0 说明它已经开始写自己的状态）。"""
 
-        mode = getattr(self, "state_source", "auto")
-        if mode == "v1":
-            return True, False
-        if mode == "v2":
-            return False, True
-        # auto：V2 库里有活数据就认为用户在用新版
         try:
+            import shutil as _sh
+            import sqlite3 as _sq
+            import tempfile as _tf
+
             for pdir in self._state_dirs():
                 for db in list(pdir.rglob("*.sqlite3")) + list(pdir.rglob("*.db")):
                     try:
-                        import shutil as _sh
-                        import sqlite3 as _sq
-                        import tempfile as _tf
-
-                        tmp = Path(_tf.mkdtemp(prefix="qkit_probe_")) / db.name
+                        tmp = Path(_tf.mkdtemp(prefix="qkit_probe2_")) / db.name
                         _sh.copy2(db, tmp)
                         for sfx in ("-wal", "-shm"):
                             side = Path(str(db) + sfx)
@@ -1406,18 +1400,80 @@ class QzoneKitPlugin(Star):
                         try:
                             tabs = {r[0] for r in con.execute(
                                 "select name from sqlite_master where type='table'")}
-                            for tb in ("role_state_records", "role_journals", "calendar_records"):
-                                if tb in tabs:
-                                    n = con.execute(f"select count(*) from {tb}").fetchone()[0]
-                                    if n > 0:
-                                        return False, True
+                            if "role_state_records" in tabs:
+                                return con.execute(
+                                    "select count(*) from role_state_records").fetchone()[0]
                         finally:
                             con.close()
                     except Exception:  # noqa: BLE001
                         continue
         except Exception:  # noqa: BLE001
             pass
-        return True, False
+        return 0
+
+    def _v1_has_state(self) -> bool:
+        try:
+            base = Path(__file__).resolve().parent.parent.parent / "plugin_data" / "astrbot_plugin_private_companion" / "companions.json"
+            if not base.is_file():
+                return False
+            data = json.loads(base.read_text(encoding="utf-8", errors="ignore"))
+            return bool(data.get("daily_state") or data.get("qq_presence_state"))
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _read_targets(self) -> tuple[bool, bool]:
+        """返回 (读V1, 读V2)。
+
+        · 已是纯 V2（它自己写了状态）→ 只读 V2
+        · 纯 V1 → 只读 V1
+        · **升级过渡期**（V2 库在、但状态表还空，V1 仍有当前状态）→ 两个都读：
+          V2 出日记/日程，V1 出当前状态；同名字段 V2 优先
+        """
+
+        mode = getattr(self, "state_source", "auto")
+        if mode == "v1":
+            return True, False
+        if mode == "v2":
+            return False, True
+
+        v2_state = self._v2_state_rows()
+        v1_state = self._v1_has_state()
+        if v2_state > 0:
+            return False, True
+        if v1_state:
+            # 过渡期：V1 有当前状态；V2 可能有迁移来的日记/日程
+            v2_present = self._v2_any_table_rows()
+            return True, v2_present
+        return (True, False) if not self._v2_any_table_rows() else (False, True)
+
+    def _v2_any_table_rows(self) -> bool:
+        for tb in ("role_journals", "calendar_records", "role_journal_derivatives"):
+            try:
+                import shutil as _sh
+                import sqlite3 as _sq
+                import tempfile as _tf
+
+                for pdir in self._state_dirs():
+                    for db in list(pdir.rglob("*.sqlite3")):
+                        tmp = Path(_tf.mkdtemp(prefix="qkit_probe3_")) / db.name
+                        _sh.copy2(db, tmp)
+                        for sfx in ("-wal", "-shm"):
+                            side = Path(str(db) + sfx)
+                            if side.is_file():
+                                _sh.copy2(side, Path(str(tmp) + sfx))
+                        con = _sq.connect(str(tmp))
+                        try:
+                            tabs = {r[0] for r in con.execute(
+                                "select name from sqlite_master where type='table'")}
+                            if tb in tabs and con.execute(
+                                f"select count(*) from {tb}").fetchone()[0] > 0:
+                                return True
+                        finally:
+                            con.close()
+            except Exception:  # noqa: BLE001
+                continue
+        return False
+
 
     def _state_dirs(self) -> list[Path]:
         """找出该读哪些插件的 plugin_data 目录（不写死目录名）。"""
