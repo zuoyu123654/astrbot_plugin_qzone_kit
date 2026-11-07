@@ -44,7 +44,7 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, StarTools, register
 
 PLUGIN_NAME = "astrbot_plugin_qzone_kit"
-PLUGIN_VERSION = "0.8.8"
+PLUGIN_VERSION = "0.8.9"
 
 QZONE_PLUGIN = "astrbot_plugin_qzone"
 QQPROFILE_STATUS = "astrbot_plugin_qqprofile"
@@ -200,6 +200,27 @@ class QzoneKitPlugin(Star):
             self.shift_max_h = max(self.shift_min_h, float(cfg.get("post_shift_max_hours", 12)))
         except (TypeError, ValueError):
             self.shift_max_h = 12.0
+        # 推后的目标尽量收进「她平时在线的时段」，别推到凌晨 4 点注定错过
+        self.active_hours = str(cfg.get("post_active_hours", "09:00-23:00") or "").strip()
+        # 攒太久的碎片就不发了（默认 5 天），免得今天的说说讲上周的事
+        try:
+            self.max_age_days = max(0.0, float(cfg.get("post_max_age_days", 5)))
+        except (TypeError, ValueError):
+            self.max_age_days = 5.0
+        # 开机后先等一会儿再检查攒着的（默认 3 分钟 + 2~60 分钟随机），
+        # 免得看起来像「一开机就发」
+        try:
+            self.boot_wait_min = max(0.0, float(cfg.get("post_boot_wait_minutes", 3)))
+        except (TypeError, ValueError):
+            self.boot_wait_min = 3.0
+        try:
+            self.boot_extra_min = max(0.0, float(cfg.get("post_boot_extra_min_minutes", 2)))
+        except (TypeError, ValueError):
+            self.boot_extra_min = 2.0
+        try:
+            self.boot_extra_max = max(self.boot_extra_min, float(cfg.get("post_boot_extra_max_minutes", 60)))
+        except (TypeError, ValueError):
+            self.boot_extra_max = 60.0
         # 动图表情包原样发（GIF 保动画，不转静态）
         self.sticker_keep_gif = bool(cfg.get("post_sticker_keep_gif", True))
         # 可以调到几分钟，方便先试；正经用还是 45
@@ -1038,6 +1059,7 @@ class QzoneKitPlugin(Star):
         post["last_at"] = time.time()
         post["source"] = source
         post.pop("pending", None)
+        post.pop("pending_due", None)  # 发完就把到点时间清掉，别让下一批拿旧时间立刻发
         self._save_state()
 
     def _post_cooldown(self, level: str) -> float:
@@ -1118,11 +1140,72 @@ class QzoneKitPlugin(Star):
         return diff <= self.avoid_hours * 60.0
 
     def _polish_due(self, ts: float) -> float:
-        """该发的时间如果撞上每天总结，就往后推几小时（继续攒着）。"""
+        """该发的时间如果撞上每天总结，就往后推几小时，再收进她的活跃时段。"""
 
-        if self._in_avoid_window(ts):
-            return ts + random.uniform(self.shift_min_h, self.shift_max_h) * 3600.0
-        return ts
+        due = ts
+        if self._in_avoid_window(due):
+            due += random.uniform(self.shift_min_h, self.shift_max_h) * 3600.0
+        due = self._clamp_to_active(due)
+        # 收进活跃时段后万一又贴回总结窗口（两个区间有重叠时），再挪一次
+        if self._in_avoid_window(due):
+            due += random.uniform(self.shift_min_h, self.shift_max_h) * 3600.0
+            due = self._clamp_to_active(due)
+        return due
+
+    def _active_span(self) -> tuple[int, int] | None:
+        """她平时在线的时段（分钟），比如 "09:00-23:00"。"""
+
+        raw = str(self.active_hours or "").strip()
+        if not raw or "-" not in raw:
+            return None
+        left, right = raw.split("-", 1)
+        start, end = self._parse_hm(left), self._parse_hm(right)
+        if not start or not end:
+            return None
+        a, b = start[0] * 60 + start[1], end[0] * 60 + end[1]
+        return (a, b) if a != b else None
+
+    def _clamp_to_active(self, ts: float) -> float:
+        """落在活跃时段外就挪到最近的「开始」（再加点随机，别整点）。"""
+
+        span = self._active_span()
+        if span is None:
+            return ts
+        start, end = span
+        t = datetime.fromtimestamp(ts)
+        cur = t.hour * 60 + t.minute
+        inside = (start <= cur < end) if start < end else (cur >= start or cur < end)
+        if inside:
+            return ts
+
+        begin = t.replace(hour=0, minute=0, second=0, microsecond=0)
+        target = begin + timedelta(minutes=start)
+        if start < end and cur >= end:
+            # 今天已经收工了 ⇒ 明天开始
+            target += timedelta(days=1)
+        target += timedelta(seconds=random.uniform(0, 2700))
+        return target.timestamp()
+
+    def _fresh_fragments(self, fragments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """丢掉攒太久的碎片（默认 >5 天就不发了）。"""
+
+        if self.max_age_days <= 0:
+            return list(fragments)
+        cutoff = time.time() - self.max_age_days * 86400.0
+        fresh, stale = [], 0
+        for item in fragments:
+            at = float(item.get("at") or 0)
+            if at and at < cutoff:
+                stale += 1
+                continue
+            fresh.append(item)
+        if stale:
+            logger.info(
+                "[QzoneKit] 有 %s 段攒超过 %g 天了，这次不发（内容过期了）",
+                stale,
+                self.max_age_days,
+            )
+        return fresh
 
     # ── 把「每天总结几点」同步给 QQ空间插件 ─────────────────────────────
     def _desired_cron(self) -> str | None:
@@ -1455,8 +1538,18 @@ class QzoneKitPlugin(Star):
         说法得跟着发布的那一刻走（凌晨别说下午好，深夜别写成大中午）。
         """
 
-        pieces = [str(f.get("text") or "").strip() for f in fragments]
-        pieces = [p for p in pieces if p]
+        pieces: list[str] = []
+        stamped: list[str] = []
+        for f in fragments:
+            txt = str(f.get("text") or "").strip()
+            if not txt:
+                continue
+            at = float(f.get("at") or 0)
+            pieces.append(txt)
+            stamp = (
+                datetime.fromtimestamp(at).strftime("%m-%d %H:%M") if at else "时间不明"
+            )
+            stamped.append(f"[写于 {stamp}] {txt}")
         if not pieces:
             return ""
         if len(pieces) == 1:
@@ -1473,8 +1566,10 @@ class QzoneKitPlugin(Star):
             "不要分点、不要标题、不要引号。只输出正文。\n"
             "**这条是现在发的**，写的时候说法要和下面的【现在时间】对得上："
             "用什么称呼、天气亮不亮、是刚醒还是要睡了，都得跟这个时间一致；"
-            "碎片里写的是别的时间点（比如半夜写的），就顺着改成现在这个说法，别硬搬。\n\n"
-            f"【现在时间】{now_block}\n\n" + "\n---\n".join(pieces)
+            "碎片里写的是别的时间点（比如半夜写的），就顺着改成现在这个说法，别硬搬。\n"
+            "**「今天/今晚」只能用来说今天的事**：碎片上标着是昨天或更早的，就说"
+            "「昨晚」「昨天」「前两天」，绝对不许写成今天——哪怕现在离得很近也不行。\n\n"
+            f"【现在时间】{now_block}\n\n" + "\n---\n".join(stamped)
         )
         try:
             merged = await self._llm(prompt)
@@ -1503,6 +1598,7 @@ class QzoneKitPlugin(Star):
             # 离「每天那条总结」太近 ⇒ 不抢这个点：把冷却往后拉几小时，继续攒着一起发
             if not force and self._in_avoid_window(now):
                 post = self.state.setdefault("post", {})
+                pending = self._fresh_fragments(pending)
                 pending.append(
                     {
                         "text": text,
@@ -1532,7 +1628,8 @@ class QzoneKitPlugin(Star):
                     f"先攒着（现在 {len(pending)} 段），到时候一起发。"
                 )
             batch = await self._select_fragments(
-                pending + [{"text": text, "importance": importance, "at": now}]
+                self._fresh_fragments(pending)
+                + [{"text": text, "importance": importance, "at": now}]
             )
             body = await self._merge_fragments(batch)
             img = self._pick_sticker(sticker or "")  # 没命中分类也走全库随机（概率在 _pick_sticker 里）
@@ -1551,6 +1648,7 @@ class QzoneKitPlugin(Star):
             return "发了，去空间看看" + (f"（顺手把攒着的 {len(pending)} 段也带上了）" if pending else "")
 
         # 冷却里 ⇒ 攒着（合并，不覆盖）
+        pending = self._fresh_fragments(pending)
         pending.append(
             {"text": text, "importance": importance, "reason": reason, "at": now}
         )
@@ -1593,32 +1691,52 @@ class QzoneKitPlugin(Star):
         post = self.state.get("post", {})
         pending_post = post.get("pending") or []
         if pending_post and now >= float(post.get("pending_due") or 0):
+            fresh = self._fresh_fragments(pending_post)
+            if not fresh:
+                # 攒的全过期了：不发，但当成「已经发过」，直接进下一轮冷却
+                self._mark_post("expired")
+                logger.info(
+                    "[QzoneKit] 攒着的 %s 段都超过 %g 天，这次不发；按已发过处理，重新开始冷却",
+                    len(pending_post),
+                    self.max_age_days,
+                )
+                return
             # 到点了，但正好撞上每天那条总结的时间窗 ⇒ 再往后挪，别一天两条
             if self._in_avoid_window(now):
                 due = self._polish_due(now)
                 post["pending_due"] = due
+                post["pending"] = fresh
                 self._save_state()
                 logger.info(
                     "[QzoneKit] 攒着的说说到点了，但撞上每天 %s 那条总结，挪到 %s 再发（%s 段还攒着）",
                     self._daily_hm_text(),
                     self._fmt_ts(due),
-                    len(pending_post),
+                    len(fresh),
                 )
             else:
-                batch = await self._select_fragments(pending_post)
+                batch = await self._select_fragments(fresh)
                 body = await self._merge_fragments(batch)
                 if body:
                     ok, err = await self._publish(body)
                     if ok:
                         logger.info(
-                            "[QzoneKit] 冷却到点，攒的 %s 段说说发出去了", len(pending_post)
+                            "[QzoneKit] 冷却到点，攒的 %s 段说说发出去了", len(fresh)
                         )
                     else:
                         logger.warning("[QzoneKit] 发攒着的说说失败：%s", err)
 
     async def _flush_loop(self) -> None:
-        # 启动先等 3 分钟：CQHttp 客户端还没绑好的时候发说说会报「CQHttp 实例不存在」
-        await asyncio.sleep(180)
+        # 启动别急着发：CQHttp 客户端还没绑好时发会报「CQHttp 实例不存在」；
+        # 再加一段随机等待，免得每次开机都像掐着表发说说。
+        wait = self.boot_wait_min * 60 + random.uniform(
+            self.boot_extra_min * 60, self.boot_extra_max * 60
+        )
+        logger.info(
+            "[QzoneKit] 开机 %.0f 分钟后再检查攒着的说说（%s）",
+            wait / 60.0,
+            self._fmt_ts(time.time() + wait),
+        )
+        await asyncio.sleep(wait)
         while True:
             try:
                 self._sync_daily_time()

@@ -84,6 +84,31 @@
     "description": "往后推的小时数上限（默认 12）。实际在上下限之间随机，免得每次都是整点。",
     "default": 12
   },
+  "post_active_hours": {
+    "type": "string",
+    "description": "她平时在线的时段（默认 09:00-23:00）。被推后的发布如果落在这段之外，就挪到下一个开始时段的头（再随机几十分钟）。留空 = 不限制。",
+    "default": "09:00-23:00"
+  },
+  "post_max_age_days": {
+    "type": "float",
+    "description": "攒着的碎片最多留几天（默认 5）。超过这个天数的就不发了；要是全过期了，这次不发、但按「已发过」处理，直接进下一轮冷却。",
+    "default": 5
+  },
+  "post_boot_wait_minutes": {
+    "type": "float",
+    "description": "开机（或重载插件）后先等几分钟再检查攒着的说说（默认 3，等 CQHttp 绑好）。",
+    "default": 3
+  },
+  "post_boot_extra_min_minutes": {
+    "type": "float",
+    "description": "在上面那几分钟之外，再随机多等一会儿（下限，默认 2 分钟），别每次都像掐着表发。",
+    "default": 2
+  },
+  "post_boot_extra_max_minutes": {
+    "type": "float",
+    "description": "随机多等的上限（默认 60 分钟）。实际是 3 分钟 + 2~60 分钟随机。",
+    "default": 60
+  },
   "judge_interval_minutes": {
     "type": "int",
     "description": "多久看一次最近的聊天，判断要不要改签名/发说说（默认 45 分钟）。想先试可以填 3、5，正常用再改回来。",
