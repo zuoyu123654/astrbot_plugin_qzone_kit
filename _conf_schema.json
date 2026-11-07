@@ -64,6 +64,26 @@
     "description": "冷却期间最多攒几段「想发的」；到点合成一条发出去（默认 5）。",
     "default": 5
   },
+  "daily_post_time": {
+    "type": "string",
+    "description": "每天那条「今天的总结」几点发（HH:MM，默认 23:00）。改这里，QQ空间插件的 AutoPublish 会跟着改（运行中重排 + 写回配置）；要是在 QQ空间 插件那边改了时间，这边也会跟着变。自己发说说会避开这个点前后一段时间。",
+    "default": "23:00"
+  },
+  "post_avoid_window_hours": {
+    "type": "float",
+    "description": "离「每天那条总结」前后几小时以内，就**不**自己另发一条（默认 1.5，即前后各 1.5 小时）。设 0 = 不管，想怎么发怎么发。",
+    "default": 1.5
+  },
+  "post_shift_min_hours": {
+    "type": "float",
+    "description": "撞上那个时间窗时，往后推几小时（下限，默认 4）。推的这段时间内容继续攒着，到点一起发。",
+    "default": 4
+  },
+  "post_shift_max_hours": {
+    "type": "float",
+    "description": "往后推的小时数上限（默认 12）。实际在上下限之间随机，免得每次都是整点。",
+    "default": 12
+  },
   "judge_interval_minutes": {
     "type": "int",
     "description": "多久看一次最近的聊天，判断要不要改签名/发说说（默认 45 分钟）。想先试可以填 3、5，正常用再改回来。",
@@ -86,8 +106,13 @@
   },
   "post_sticker_enabled": {
     "type": "bool",
-    "description": "【需要使用者同意才开】发说说时配一张表情包：来源是「表情包管理器」(meme_manager) 里的表情包（https://github.com/anka-afk/astrbot_plugin_meme_manager），会从它所有图包里挑情绪合适的一张，动图/其他格式会转成静态 JPEG。默认关。",
+    "description": "【需要使用者同意才开】发说说时配一张表情包：来源是「表情包管理器」(meme_manager) 里的表情包（https://github.com/anka-afk/astrbot_plugin_meme_manager），会从它所有图包里挑情绪合适的一张。默认关。",
     "default": false
+  },
+  "post_sticker_keep_gif": {
+    "type": "bool",
+    "description": "表情包里的 GIF 动图原样发出去（空间支持动图，动画会保住），不转静态、多大都不转（默认开）。关掉就退回以前的「一律转 JPEG」。",
+    "default": true
   },
   "post_sticker_prob": {
     "type": "float",

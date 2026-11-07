@@ -21,7 +21,10 @@
   · 判断靠「最近聊天 + 现在时间 + 上次改/发的时间」，走当前会话那个模型，不额外配 provider。
 
 ⚠️ 和 QQ空间插件自带的 23:00 AutoPublish 并存：那条是「每天的总结」，
-   这里的是「有情绪/有事的即时说说」，靠冷却各自管着，不会一天刷两条。
+   这里的是「有情绪/有事的即时说说」。除了冷却，还加了一道时间窗：
+   自己发说说如果落在「每天总结」前后 N 小时（默认 1.5）里，就不发，
+   把冷却往后推 4~8 小时，这段时间内容继续攒着，到点一起发。
+   总结几点发是现读 publish_cron 的（也可以用 daily_post_time 反过去定它）。
 """
 
 from __future__ import annotations
@@ -41,7 +44,7 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, StarTools, register
 
 PLUGIN_NAME = "astrbot_plugin_qzone_kit"
-PLUGIN_VERSION = "0.2.0"
+PLUGIN_VERSION = "0.8.8"
 
 QZONE_PLUGIN = "astrbot_plugin_qzone"
 QQPROFILE_STATUS = "astrbot_plugin_qqprofile"
@@ -179,6 +182,26 @@ class QzoneKitPlugin(Star):
         self.post_max_days = float(cfg.get("post_normal_max_days", 2.6) or 2.6)
         self.post_crit_min_h = float(cfg.get("post_critical_min_hours", 22) or 22)
         self.post_crit_max_h = float(cfg.get("post_critical_max_hours", 29.2) or 29.2)
+        # 每天那条「总结」是 QQ空间插件的 AutoPublish 在发（默认 23:00）。
+        # 自己发的说说要躲开它前后这段时间，否则一天两条挤在一起。
+        # 留空 = 完全跟着 QQ空间插件配置里的 publish_cron；填了 = 由这里说了算（也会同步过去）。
+        self.daily_post_time = str(cfg.get("daily_post_time", "23:00") or "23:00").strip()
+        # 躲开多少小时（前后各这么多，默认 1.5）
+        try:
+            self.avoid_hours = max(0.0, float(cfg.get("post_avoid_window_hours", 1.5)))
+        except (TypeError, ValueError):
+            self.avoid_hours = 1.5
+        # 撞上了就往后推几小时（区间随机，默认 4~8），推的这段时间继续攒
+        try:
+            self.shift_min_h = max(0.5, float(cfg.get("post_shift_min_hours", 4)))
+        except (TypeError, ValueError):
+            self.shift_min_h = 4.0
+        try:
+            self.shift_max_h = max(self.shift_min_h, float(cfg.get("post_shift_max_hours", 12)))
+        except (TypeError, ValueError):
+            self.shift_max_h = 12.0
+        # 动图表情包原样发（GIF 保动画，不转静态）
+        self.sticker_keep_gif = bool(cfg.get("post_sticker_keep_gif", True))
         # 可以调到几分钟，方便先试；正经用还是 45
         self.judge_minutes = max(1, int(cfg.get("judge_interval_minutes", 45) or 45))
         # 只在「有新聊天」时才判断；间隔随机浮动，别像闹钟
@@ -238,6 +261,8 @@ class QzoneKitPlugin(Star):
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.state_file = self.data_dir / "state.json"
         self.state: dict[str, Any] = self._load_state()
+        # 每天总结几点的「上一次看到的值」，变了就重新打日志 / 对表
+        self._daily_hm_seen: str | None = None
 
         self._task: asyncio.Task | None = None
         self._flush_task: asyncio.Task | None = None
@@ -334,6 +359,16 @@ class QzoneKitPlugin(Star):
                 logger.info("[QzoneKit] 状态来源：%s", "、".join(srcs) or "（没找到）")
             except Exception as exc:  # noqa: BLE001
                 logger.warning("[QzoneKit] 状态来源探测失败：%s", exc)
+        if self.auto_post:
+            self._sync_daily_time()
+            logger.info(
+                "[QzoneKit] 每天 %s 那条总结前后 %.1f 小时不自己发；撞上就往后推 %.0f~%.0f 小时继续攒"
+                "（时间从 QQ空间插件的 publish_cron 现读，改了会自动跟上）",
+                self._daily_hm_text(),
+                self.avoid_hours,
+                self.shift_min_h,
+                self.shift_max_h,
+            )
         try:
             logger.info("[QzoneKit] 依赖检查：%s", "；".join(self._partner_report()))
         except Exception as exc:  # noqa: BLE001
@@ -744,13 +779,15 @@ class QzoneKitPlugin(Star):
         try:
             material = await self._recent_block()
             state = await self._state_block()
+            now_block = self._now_block()
         except Exception:  # noqa: BLE001
             material, state = "（没拿到聊天）", "（没拿到状态）"
+            now_block = ""
         prompt = (
             self.KIND_PROMPTS[k]
             + ("\n额外要求：" + extra.strip() if extra.strip() else "")
             + "\n只输出正文，不要标题/引号/解释。\n\n【她的状态】\n" + state
-            + "\n\n【最近聊天】\n" + material
+            + f"\n\n【现在时间】{now_block}\n\n【最近聊天】\n" + material
         )
         try:
             body = (await self._llm(prompt)).strip()
@@ -846,6 +883,19 @@ class QzoneKitPlugin(Star):
                         index.setdefault(cat_dir.name.strip().lower(), []).extend(files)
         return index
 
+    def _prepare_image(self, src: Path) -> str:
+        """表情包预处理。
+
+        GIF 动图**原样发**，多大都不转静态：实测 QQ 空间的 cgi_upload_image 收 GIF 会保留动画
+        （发出去的图抓回来还是 GIF89a、帧数不变）。真上传失败了也不是大事——
+        `_publish` 会退回纯文字再发一次，不会丢说说。
+        其它格式（webp/bmp）仍旧转成 JPEG，兜住上传接口。
+        """
+
+        if src.suffix.lower() == ".gif" and self.sticker_keep_gif:
+            return str(src)
+        return self._to_jpeg(src)
+
     def _to_jpeg(self, src: Path) -> str:
         if src.suffix.lower() in (".jpg", ".jpeg"):
             return str(src)
@@ -885,7 +935,7 @@ class QzoneKitPlugin(Star):
             logger.info("[QzoneKit] 没有「%s」分类，从全部 %s 张里随机挑", cat or "（空）", len(files))
         if not files:
             return ""
-        return self._to_jpeg(random.choice(files))
+        return self._prepare_image(random.choice(files))
 
     # ── 签名：冷却 + 待换队列（新的覆盖旧的） ─────────────────────────────
     def _sig_last_ts(self) -> float:
@@ -994,6 +1044,195 @@ class QzoneKitPlugin(Star):
         if self._level_rank(level) >= 2:
             return self._span(self.post_crit_min_h, self.post_crit_max_h, 3600.0)
         return self._span(self.post_min_days, self.post_max_days, 86400.0)
+
+    # ── 躲开「每天那条总结」的时间窗 ─────────────────────────────────────
+    @staticmethod
+    def _parse_hm(text: str) -> tuple[int, int] | None:
+        m = re.match(r"^(\d{1,2})\s*[:：]\s*(\d{1,2})", str(text or "").strip())
+        if not m:
+            return None
+        hour, minute = int(m.group(1)), int(m.group(2))
+        if 0 <= hour < 24 and 0 <= minute < 60:
+            return hour, minute
+        return None
+
+    @staticmethod
+    def _cron_hm(cron: str) -> tuple[int, int] | None:
+        """只认最简单的「分 时 * * *」；复杂的（每 N 小时之类）返回 None。"""
+
+        parts = str(cron or "").strip().split()
+        if len(parts) != 5 or parts[2:] != ["*", "*", "*"]:
+            return None
+        try:
+            hour, minute = int(parts[1]), int(parts[0])
+        except ValueError:
+            return None
+        if 0 <= hour < 24 and 0 <= minute < 60:
+            return hour, minute
+        return None
+
+    def _qzone_cron(self) -> str:
+        """QQ空间插件配置里的 publish_cron 原文。"""
+
+        try:
+            cfg_file = (
+                self.data_dir.parent.parent
+                / "config"
+                / "astrbot_plugin_qzone_config.json"
+            )
+            trigger = json.loads(
+                cfg_file.read_text(encoding="utf-8-sig")  # AstrBot 存的配置可能带 BOM
+            ).get("trigger") or {}
+            return str(trigger.get("publish_cron") or "").strip()
+        except Exception:  # noqa: BLE001
+            return ""
+
+    def _qzone_cron_hm(self) -> tuple[int, int] | None:
+        return self._cron_hm(self._qzone_cron())
+
+    def _daily_hm(self) -> tuple[int, int]:
+        """每天那条总结几点发：**每次都现算**，别人改了时间这边立刻跟上。
+
+        优先级：本插件配置 `daily_post_time` > QQ空间插件的 `publish_cron` > 23:00。
+        """
+
+        hm = self._parse_hm(self.daily_post_time)
+        if hm:
+            return hm
+        return self._qzone_cron_hm() or (23, 0)
+
+    def _daily_hm_text(self) -> str:
+        return "%02d:%02d" % self._daily_hm()
+
+    def _in_avoid_window(self, ts: float) -> bool:
+        """ts 是不是落在「每天总结」前后 avoid_hours 小时里。"""
+
+        if self.avoid_hours <= 0:
+            return False
+        t = datetime.fromtimestamp(ts)
+        cur = t.hour * 60 + t.minute + t.second / 60.0
+        hm = self._daily_hm()
+        tgt = hm[0] * 60 + hm[1]
+        diff = abs(cur - tgt)
+        diff = min(diff, 1440.0 - diff)  # 跨零点按环形算
+        return diff <= self.avoid_hours * 60.0
+
+    def _polish_due(self, ts: float) -> float:
+        """该发的时间如果撞上每天总结，就往后推几小时（继续攒着）。"""
+
+        if self._in_avoid_window(ts):
+            return ts + random.uniform(self.shift_min_h, self.shift_max_h) * 3600.0
+        return ts
+
+    # ── 把「每天总结几点」同步给 QQ空间插件 ─────────────────────────────
+    def _desired_cron(self) -> str | None:
+        """配置了 daily_post_time 才由这边说了算；留空就完全跟着 QQ空间插件。"""
+
+        hm = self._parse_hm(self.daily_post_time)
+        if not hm:
+            return None
+        return f"{hm[1]} {hm[0]} * * *"
+
+    def _apply_cron_to_qzone(self, cron: str) -> bool:
+        """让 QQ空间插件的 AutoPublish 现在就按新的时间跑（不重启）。"""
+
+        qz = self._star(QZONE_PLUGIN)
+        publisher = getattr(qz, "auto_publish", None) if qz else None
+        if publisher is None or getattr(publisher, "_terminated", False):
+            return False
+        if str(getattr(publisher, "cron_expr", "") or "") == cron:
+            return True
+        try:
+            publisher.cron_expr = cron
+            publisher.scheduler.remove_all_jobs()
+            publisher._register_task()
+            logger.info("[QzoneKit] 每天总结的时间改成 %s（已让 QQ空间插件重新排期）", cron)
+            return True
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[QzoneKit] 改每天总结的时间失败（%s），可以自己去 QQ空间 插件里改 publish_cron",
+                exc,
+            )
+            return False
+
+    def _persist_cron(self, cron: str) -> None:
+        """顺手写回 QQ空间插件的配置文件，重启后也还是这个点。"""
+
+        try:
+            cfg_file = (
+                self.data_dir.parent.parent
+                / "config"
+                / "astrbot_plugin_qzone_config.json"
+            )
+            data = json.loads(cfg_file.read_text(encoding="utf-8-sig"))
+            trigger = data.setdefault("trigger", {})
+            if str(trigger.get("publish_cron") or "") == cron:
+                return
+            trigger["publish_cron"] = cron
+            cfg_file.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            logger.info("[QzoneKit] 已把 QQ空间插件配置里的 publish_cron 写成 %s", cron)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[QzoneKit] 写 QQ空间插件配置失败：%s", exc)
+
+    def _sync_daily_time(self) -> None:
+        """开机、以及每轮检查时对一次表：时间变了，时间窗也就跟着变。"""
+
+        hm_text = self._daily_hm_text()
+        if getattr(self, "_daily_hm_seen", None) != hm_text:
+            self._daily_hm_seen = hm_text
+            logger.info(
+                "[QzoneKit] 每天总结的时间：%s（时间窗 ±%.1f 小时会跟着它走）",
+                hm_text,
+                self.avoid_hours,
+            )
+
+        desired = self._desired_cron()
+        if not desired:
+            self._cron_applied = None
+            return
+        current = self._qzone_cron()
+        applied = getattr(self, "_cron_applied", None)
+
+        # 别人在 QQ空间 插件那边把时间改了 ⇒ 以那边为准，这边跟着改（别把人的设置按回去）
+        if applied and current and current not in (applied, desired):
+            hm = self._cron_hm(current)
+            if hm:
+                self.daily_post_time = "%02d:%02d" % hm
+                self._daily_hm_seen = self.daily_post_time
+                self._write_config_value("daily_post_time", self.daily_post_time)
+                self._cron_applied = current
+                logger.info(
+                    "[QzoneKit] QQ空间 那边把每天总结改成了 %s，这边跟着改过来",
+                    self.daily_post_time,
+                )
+                return
+
+        if current != desired and self._apply_cron_to_qzone(desired):
+            self._persist_cron(desired)
+            current = desired
+        self._cron_applied = current or desired
+
+    def _write_config_value(self, key: str, value: Any) -> None:
+        """把自己这份配置的某个值写回文件（本插件不重启也能读新值）。"""
+
+        try:
+            cfg_file = (
+                self.data_dir.parent.parent
+                / "config"
+                / "astrbot_plugin_qzone_kit_config.json"
+            )
+            data = json.loads(cfg_file.read_text(encoding="utf-8-sig"))
+            if data.get(key) == value:
+                return
+            data[key] = value
+            cfg_file.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[QzoneKit] 写配置 %s 失败：%s", key, exc)
+
 
     async def _diagnose_images(self, service: Any, text: str, images: list[str]) -> None:
         """配图失败时把中间过程打出来：上传返回了什么、带图发布返回了什么。"""
@@ -1210,18 +1449,32 @@ class QzoneKitPlugin(Star):
         return newest[:high] if len(fragments) > high else fragments
 
     async def _merge_fragments(self, fragments: list[dict[str, Any]]) -> str:
-        """把攒着的几段合成一条说说；模型不给力就直接用换行拼。"""
+        """把攒着的几段合成一条说说；模型不给力就直接用换行拼。
+
+        合成的时候要告诉她「现在几点」——攒着的内容可能是半夜写的、白天才发，
+        说法得跟着发布的那一刻走（凌晨别说下午好，深夜别写成大中午）。
+        """
 
         pieces = [str(f.get("text") or "").strip() for f in fragments]
         pieces = [p for p in pieces if p]
         if not pieces:
             return ""
         if len(pieces) == 1:
-            return pieces[0]
+            age = time.time() - float(fragments[0].get("at") or 0)
+            if age <= 3600:  # 刚写的，不用再让模型改口
+                return pieces[0]
+        try:
+            now_block = self._now_block()
+        except Exception:  # noqa: BLE001
+            now_block = ""
         prompt = (
             "把下面几段「想发进 QQ 空间」的碎片合成**一条**说说：保留具体的事和她的语气，"
             "合并重复的意思，按时间或情绪顺序排好，100~200 字，第一人称口语，"
-            "不要分点、不要标题、不要引号。只输出正文。\n\n" + "\n---\n".join(pieces)
+            "不要分点、不要标题、不要引号。只输出正文。\n"
+            "**这条是现在发的**，写的时候说法要和下面的【现在时间】对得上："
+            "用什么称呼、天气亮不亮、是刚醒还是要睡了，都得跟这个时间一致；"
+            "碎片里写的是别的时间点（比如半夜写的），就顺着改成现在这个说法，别硬搬。\n\n"
+            f"【现在时间】{now_block}\n\n" + "\n---\n".join(pieces)
         )
         try:
             merged = await self._llm(prompt)
@@ -1247,6 +1500,37 @@ class QzoneKitPlugin(Star):
         pending = list(self.state.get("post", {}).get("pending") or [])
 
         if left <= 0:
+            # 离「每天那条总结」太近 ⇒ 不抢这个点：把冷却往后拉几小时，继续攒着一起发
+            if not force and self._in_avoid_window(now):
+                post = self.state.setdefault("post", {})
+                pending.append(
+                    {
+                        "text": text,
+                        "importance": importance,
+                        "reason": reason,
+                        "at": now,
+                    }
+                )
+                pending = pending[-self.max_fragments :]
+                due = max(float(post.get("pending_due") or 0), self._polish_due(now))
+                post["pending"] = pending
+                post["pending_due"] = due
+                post["avoided_at"] = now
+                self._save_state()
+                hours = (due - now) / 3600.0
+                logger.info(
+                    "[QzoneKit] 撞上每天 %s 那条总结，先不发：冷却推后 %.1f 小时（到 %s），"
+                    "已攒 %s 段",
+                    self._daily_hm_text(),
+                    hours,
+                    self._fmt_ts(due),
+                    len(pending),
+                )
+                return (
+                    f"先不发：{self._daily_hm_text()} 那条每天总结就在附近，怕一天两条挤一起。"
+                    f"往后推了大约 {hours:.0f} 小时（到 {self._fmt_ts(due)}），"
+                    f"先攒着（现在 {len(pending)} 段），到时候一起发。"
+                )
             batch = await self._select_fragments(
                 pending + [{"text": text, "importance": importance, "at": now}]
             )
@@ -1275,7 +1559,8 @@ class QzoneKitPlugin(Star):
         post["pending"] = pending
         # 同样：攒着的这一批只定一次到点时间，后加的片段不推迟它
         if not float(post.get("pending_due") or 0):
-            post["pending_due"] = last + need if last else now
+            base_due = last + need if last else now
+            post["pending_due"] = self._polish_due(base_due)
         self._save_state()
         hours = left / 3600.0
         logger.info(
@@ -1308,20 +1593,35 @@ class QzoneKitPlugin(Star):
         post = self.state.get("post", {})
         pending_post = post.get("pending") or []
         if pending_post and now >= float(post.get("pending_due") or 0):
-            batch = await self._select_fragments(pending_post)
-            body = await self._merge_fragments(batch)
-            if body:
-                ok, err = await self._publish(body)
-                if ok:
-                    logger.info("[QzoneKit] 冷却到点，攒的 %s 段说说发出去了", len(pending_post))
-                else:
-                    logger.warning("[QzoneKit] 发攒着的说说失败：%s", err)
+            # 到点了，但正好撞上每天那条总结的时间窗 ⇒ 再往后挪，别一天两条
+            if self._in_avoid_window(now):
+                due = self._polish_due(now)
+                post["pending_due"] = due
+                self._save_state()
+                logger.info(
+                    "[QzoneKit] 攒着的说说到点了，但撞上每天 %s 那条总结，挪到 %s 再发（%s 段还攒着）",
+                    self._daily_hm_text(),
+                    self._fmt_ts(due),
+                    len(pending_post),
+                )
+            else:
+                batch = await self._select_fragments(pending_post)
+                body = await self._merge_fragments(batch)
+                if body:
+                    ok, err = await self._publish(body)
+                    if ok:
+                        logger.info(
+                            "[QzoneKit] 冷却到点，攒的 %s 段说说发出去了", len(pending_post)
+                        )
+                    else:
+                        logger.warning("[QzoneKit] 发攒着的说说失败：%s", err)
 
     async def _flush_loop(self) -> None:
         # 启动先等 3 分钟：CQHttp 客户端还没绑好的时候发说说会报「CQHttp 实例不存在」
         await asyncio.sleep(180)
         while True:
             try:
+                self._sync_daily_time()
                 await self._flush_pending()
             except Exception as exc:  # noqa: BLE001
                 logger.warning("[QzoneKit] 冷却检查出错：%s", exc)

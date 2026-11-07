@@ -76,7 +76,7 @@ AI 配置时先看一眼 `data/plugins/astrbot_plugin_private_companion/metadata
 | 2 | **改资料** | 昵称 / 签名 / 在线状态 / 头像（直接走 OneBot 接口，不依赖别的插件） |
 | 3 | **手动发一条总结** | 「现在就发一条说说」——复用 QQ空间插件那套读聊天、写稿的逻辑 |
 | 4 | **自动改签名** | 她自己判断心情/目标/兴趣变了就换；平时 **13~32 天**一次，非常重要 **22~29.2 小时**；冷却没过就记下来，新的覆盖旧的 |
-| 5 | **自动发说说** | 发泄 / 被安慰 / 新鲜事 / 重要事 / 想记录 / 有感触时发；平时 **2~2.6 天**一条，非常重要 **22~29.2 小时**；不重要的小事**攒着合成一条**；**3 天没发就保底发一条**日常；**75%** 概率带表情包（来自「表情包管理器」的全部图包） |
+| 5 | **自动发说说** | 发泄 / 被安慰 / 新鲜事 / 重要事 / 想记录 / 有感触时发；平时 **2~2.6 天**一条，非常重要 **22~29.2 小时**；不重要的小事**攒着合成一条**；**3 天没发就保底发一条**日常；**75%** 概率带表情包（来自「表情包管理器」的全部图包，GIF 动态原样发）；会自动躲开「每天那条总结」（见下） |
 
 ## 五个工具（模型能直接调）
 
@@ -124,7 +124,22 @@ AI 配置时先看一眼 `data/plugins/astrbot_plugin_private_companion/metadata
   - **不超过 3 条**：直接全部合成一条发；
   - **超过 3 条**：先让模型挑一遍（重要性 + 新鲜度），**挑完发 3~5 条**，具体几条它自己定；
     太旧又无关紧要的就不发了。再来的新片段跟着这批走，不推迟发车时间。
-- **表情包**（可选，默认开 50%）：从「表情包管理器」(`meme_manager`) 图包里按语义分类挑，GIF 抽第一帧转 JPEG；**带图发布失败会自动退回纯文字**，不会丢说说。
+- **表情包**（可选，默认开 75%）：从「表情包管理器」(`meme_manager`) 图包里按语义分类挑，**GIF 动图原样发**（空间会保动画），其它格式转 JPEG；**带图发布失败会自动退回纯文字**，不会丢说说。
+
+## 和「每天那条总结」不撞车
+
+每天的「今天的总结」是 QQ空间插件的 AutoPublish 在发（默认 23:00），所以自己发说说之前多了一道检查：
+
+- 现在的时间如果落在「每天总结」**前后各 1.5 小时**内（默认 21:30~00:30）⇒ **不发**，
+  把这次发布**往后推 4~12 小时**（随机），这段时间内容继续攒着，到点**合成一条**一起发。
+- 冷却到点、准备发攒着的那批时，同样会再看一次时间；撞上就再往后挪，不会硬发。
+- **几点算「每天总结」**：`daily_post_time` 默认 `23:00`，改它 QQ空间插件的 AutoPublish
+  **立刻就跟着改**（运行中重排 + 写回 `publish_cron`，重启也还是这个点）；
+  反过来在 QQ空间 插件那边改了时间，这边也会跟着变过来（不会把人的设置按回去）。
+  真把 `daily_post_time` 清空的话，就退回"每次现读 `publish_cron`"。
+- 半夜不拦：0 点以后她想发就发，只是**写的时候要跟现在的时间对得上**——
+  合成说说时会把【现在时间】（含时段称呼）喂给模型，凌晨写的碎片到了别的时间发，会顺着改成那时的说法。
+- 老大**点名**让她发（`qzone_post_on_demand` / 手动发总结）不受这个限制，说发就发。
 
 ## 配置项
 
@@ -139,6 +154,9 @@ AI 配置时先看一眼 `data/plugins/astrbot_plugin_private_companion/metadata
 | `post_normal_min_days` / `_max_days` | 2 / 2.6 | 平时说说区间（天） |
 | `post_critical_min_hours` / `_max_hours` | 22 / 29.2 | 非常重要时的区间（小时） |
 | `post_max_fragments` | 5 | 冷却里最多攒几段 |
+| `daily_post_time` | `23:00` | 每天总结几点发（`HH:MM`）。改这里会同步改 QQ空间的排期与配置；在 QQ空间 那边改了这边也会跟过来。清空 = 每次现读 `publish_cron` |
+| `post_avoid_window_hours` | 1.5 | 每天总结前后各多少小时内不自己另发（0 = 不管） |
+| `post_shift_min_hours` / `_max_hours` | 4 / 12 | 撞上就往后推几小时（区间随机），推的这段时间继续攒 |
 | `post_select_threshold` | 4 | 超过几条才筛选（4 = 大于三条才挑） |
 | `post_publish_min` | 3 | 筛选后最少发几段 |
 | `post_publish_max` | 5 | 筛选后最多发几段（具体几条由她判断） |
@@ -146,7 +164,8 @@ AI 配置时先看一眼 `data/plugins/astrbot_plugin_private_companion/metadata
 | `judge_interval_minutes` | 45 | 多久判断一次（试的时候可以填 2~3） |
 | `recent_message_limit` | 40 | 判断时回看多少条消息 |
 | `judge_provider_id` | 空 | 判断用哪个模型（空 = 当前会话模型） |
-| `post_sticker_enabled` | false | 发说说带表情包（**需要你同意才开**）。来源：「表情包管理器」`meme_manager`（https://github.com/anka-afk/astrbot_plugin_meme_manager），用它**所有图包**的图；动图/其他格式会转静态 JPEG；带图失败自动退回纯文字 |
+| `post_sticker_enabled` | false | 发说说带表情包（**需要你同意才开**）。来源：「表情包管理器」`meme_manager`（https://github.com/anka-afk/astrbot_plugin_meme_manager），用它**所有图包**的图；GIF 原样发（保动画），其它格式转静态 JPEG；带图失败自动退回纯文字 |
+| `post_sticker_keep_gif` | true | GIF 动图原样发；关掉就退回「一律转静态 JPEG」 |
 | `post_sticker_prob` | 0.75 | 开的时候多少比例带图 |
 | `dry_run` | false | 试运行：只判断、只记日志，不动真格 |
 | `test_force_post_once` | false | 【测试】下一轮无视判断，强制改签名 + 带图发一条（只生效一次） |
@@ -168,3 +187,8 @@ AI 配置时先看一眼 `data/plugins/astrbot_plugin_private_companion/metadata
 3. **带图说说发不出去**：QQ空间的 `normalize_images` 用 `urlparse` 解析图片路径，Windows 的 `D:\...` 会被当成协议 `d` 丢掉 → 0 张图 → `code=-10061`。修法见 `SETUP-FOR-AI.md` 第 4 节（给 `download_file` 打本地路径优先的补丁）。
 4. **`Post` 模型只收字符串路径**：传 `bytes` 会在 `Post(...)` 校验时报 `1 validation error for Post`，别走这条路。
 5. **改头像必须给图**（发图或图片链接）；**删说说按日期是整批删、不可撤销**。
+6. **GIF 动图不用转静态**：实测 QQ 空间的 `cgi_upload_image` 收 GIF 是保留动画的——
+   发出去再抓回来还是 `GIF89a`、帧数不变（Qzone 会把图压缩成缩略图，但动画还在）。
+   所以 GIF 现在**一律原样发**，多大都不转，别再抽第一帧了；真传不上去会退回纯文字，不会丢说说。
+7. **AstrBot 存的配置 json 带 BOM**：读别人的配置文件要用 `utf-8-sig`，不然
+   `JSONDecodeError: Unexpected UTF-8 BOM`，会静默退回默认值。

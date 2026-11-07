@@ -19,13 +19,17 @@
    要主动说明来源：
 
    > 配图来自「表情包管理器」(`meme_manager`) 的图包，它会读那个插件里**所有**表情包的图片，
-   > 动图会转成静态图，按 **75%（高概率）** 给说说配一张；**每天那条总结也一起配图**，
+   > 按 **75%（高概率）** 给说说配一张；**每天那条总结也一起配图**，
 > 两边共用同一个概率，想调就改 `post_sticker_prob`。
+   > GIF 动图会**原样发**（空间保动画），其它格式转静态 JPEG。
    > 插件地址：https://github.com/anka-afk/astrbot_plugin_meme_manager
    > 不同意就保持 `post_sticker_enabled: false`，其它功能不受影响。
 
 5. 顺带确认：每天总结要不要跟本插件的「即时说说」并存（两者各算冷却）；
    不想要两条的话把 QQ空间 的 `trigger.publish_cron` 关掉。
+   并存的话本插件会自动躲开那个点（前后各 1.5 小时不自己发，撞上就推后 4~12 小时），
+   每天总结是几点不用手填——`daily_post_time` 默认 23:00，改它 QQ空间那边跟着变；
+不想管就清空，会每次现读 `publish_cron`。
 
 **配完必须回报**：哪三个开关是开的/关的、配图开没开、配图概率多少、判断间隔多少。
 模板见第 7 节。
@@ -121,8 +125,11 @@ Added llm tool: qzone_delete_feeds / qq_profile_update / qzone_post_summary
 | `post_fallback_days` | 3 | **保底**：3 天没发就要求她这轮必须发一条日常，避免长期沉默 |
 | `judge_interval_minutes` | 45 | 判断频率。调试时可以临时改 2~3（见 5.3），正式改回来 |
 | `daily_post_enabled` | true | 每天 23 点那条总结（QQ空间插件 AutoPublish）；关掉会 `terminate()` 掉它 |
-| `post_sticker_enabled` | true | 带表情包。**启用前必须问使用者同意**；来源是「表情包管理器」`meme_manager`（https://github.com/anka-afk/astrbot_plugin_meme_manager），用它**全部图包**（本机实测 2 个包共 331 张），动图/PNG/WEBP 会转 JPEG |
+| `post_sticker_enabled` | true | 带表情包。**启用前必须问使用者同意**；来源是「表情包管理器」`meme_manager`（https://github.com/anka-afk/astrbot_plugin_meme_manager），用它**全部图包**（本机实测 2 个包共 331 张），GIF 原样发（保动画），其它格式转 JPEG |
 | `post_sticker_prob` | 0.75 | 3/4 的说说带图；**每日总结与即时说说共用这个概率**（插件会包一层 `publish_post`） |
+| `daily_post_time` | `23:00` | 每天总结几点（`HH:MM`）。改这里会同步改 QQ空间的排期与配置；在 QQ空间 那边改了这边也会跟过来。清空 = 每次现读 `publish_cron` |
+| `post_avoid_window_hours` | 1.5 | 每天总结前后**各**这么多小时不自己另发；撞上就往后推 |
+| `post_shift_min_hours` / `_max_hours` | 4 / 12 | 推后的小时数区间（这个区间里随机） |
 | `dry_run` | false | 试运行开关：true = 只判断、只写日志 |
 | `test_force_post_once` | false | 一次性测试开关（见 5.3），平时必须 false |
 
@@ -284,5 +291,7 @@ def download_file(url: str):
 - **删说说不可撤销**：`qzone_delete_feeds` 按日期是**整批删**；调用前确认使用者说的是「删」。
 - **表情包**：`post_sticker_enabled` 默认 false，启用前必须获得使用者同意（会读取 `meme_manager` 图包）。
 - **和 QQ空间插件自带的 23:00 AutoPublish 并存**：那条是「每日总结」，本插件是「有情绪/有事的即时说说」，
-  两边各自算冷却；如果不想要两条，把 QQ空间 的 `trigger.publish_cron` 关掉（或反过来）。
+  两边各自算冷却；本插件会自动躲开那个时间点前后各 1.5 小时（撞上就推后 4~8 小时）。
+  时间从 QQ空间 的 `publish_cron` 现读，对方改了会跟着变；也可以用本插件的 `daily_post_time` 反过来定它。
+  如果不想要两条，把 QQ空间 的 `trigger.publish_cron` 关掉（或反过来）。
 - **成本**：每轮判断就是一次小型 LLM 调用（45 分钟一轮 ≈ 一天 32 次），判断提示词很短，花费可忽略。
