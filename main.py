@@ -44,7 +44,7 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, StarTools, register
 
 PLUGIN_NAME = "astrbot_plugin_qzone_kit"
-PLUGIN_VERSION = "0.9.5"
+PLUGIN_VERSION = "0.9.6"
 
 QZONE_PLUGIN = "astrbot_plugin_qzone"
 QQPROFILE_STATUS = "astrbot_plugin_qqprofile"
@@ -177,9 +177,9 @@ class QzoneKitPlugin(Star):
         self.sig_max_days = float(cfg.get("signature_normal_max_days", 16.1) or 16.1)
         self.sig_crit_min_h = float(cfg.get("signature_critical_min_hours", 22) or 22)
         self.sig_crit_max_h = float(cfg.get("signature_critical_max_hours", 29.2) or 29.2)
-        # 发说说：平时 2~2.6 天；非常重要 22~29.2 小时
+        # 发说说：平时 2~3.6 天；非常重要 22~29.2 小时
         self.post_min_days = float(cfg.get("post_normal_min_days", 2) or 2)
-        self.post_max_days = float(cfg.get("post_normal_max_days", 2.6) or 2.6)
+        self.post_max_days = float(cfg.get("post_normal_max_days", 3.6) or 3.6)
         self.post_crit_min_h = float(cfg.get("post_critical_min_hours", 22) or 22)
         self.post_crit_max_h = float(cfg.get("post_critical_max_hours", 29.2) or 29.2)
         # 每天那条「总结」是 QQ空间插件的 AutoPublish 在发（默认 23:00）。
@@ -191,7 +191,16 @@ class QzoneKitPlugin(Star):
             self.avoid_hours = max(0.0, float(cfg.get("post_avoid_window_hours", 1.5)))
         except (TypeError, ValueError):
             self.avoid_hours = 1.5
-        # 撞上了就等这个窗口过去（最多挪到窗口结束，不往后推几个小时）
+        # 「现在就发」时的保护：只避开总结前后 15 分钟，撞上就往后挪半小时
+        try:
+            self.instant_guard_min = max(0.0, float(cfg.get("post_instant_guard_minutes", 15)))
+        except (TypeError, ValueError):
+            self.instant_guard_min = 15.0
+        try:
+            self.instant_push_min = max(1.0, float(cfg.get("post_instant_push_minutes", 30)))
+        except (TypeError, ValueError):
+            self.instant_push_min = 30.0
+        # 攒着的那批：抽到点时间撞上整段窗口就重抽（不往后推几个小时）
         # 攒太久的碎片就不发了（默认 5 天），免得今天的说说讲上周的事
         try:
             self.max_age_days = max(0.0, float(cfg.get("post_max_age_days", 5)))
@@ -373,9 +382,12 @@ class QzoneKitPlugin(Star):
         if self.auto_post:
             self._sync_daily_time()
             logger.info(
-                "[QzoneKit] 每天 %s 那条总结前后 %.1f 小时内，她不另发；生成时间时就避开这个窗口",
+                "[QzoneKit] 每天 %s 那条总结：攒着的那批避开前后 %.1f 小时（撞了就重抽）；"
+                "现在就发的只避 %.0f 分钟（撞上挪 %.0f 分钟）",
                 self._daily_hm_text(),
                 self.avoid_hours,
+                self.instant_guard_min,
+                self.instant_push_min,
             )
         try:
             logger.info("[QzoneKit] 依赖检查：%s", "；".join(self._partner_report()))
@@ -1144,6 +1156,29 @@ class QzoneKitPlugin(Star):
         end = min(exits)
         return end.timestamp() + random.uniform(60, 25 * 60)
 
+    def _near_summary(self, ts: float, minutes: float) -> bool:
+        """ts 是不是离「每天总结」不到 minutes 分钟（立刻想发时用）。"""
+
+        if minutes <= 0:
+            return False
+        t = datetime.fromtimestamp(ts)
+        cur = t.hour * 60 + t.minute + t.second / 60.0
+        hm = self._daily_hm()
+        tgt = hm[0] * 60 + hm[1]
+        diff = abs(cur - tgt)
+        diff = min(diff, 1440.0 - diff)
+        return diff <= minutes
+
+    def _instant_due(self, now: float) -> float:
+        """现在就想发、但贴着总结：往后挪半小时，直到离开那 15 分钟。"""
+
+        due = now
+        for _ in range(48):
+            if not self._near_summary(due, self.instant_guard_min):
+                return due
+            due += self.instant_push_min * 60.0
+        return due + 3600.0
+
     def _avoid_window(self, ts: float) -> float:
         """现在就要发、但正撞窗口：没别的时间可选，只能等这个窗口过去。"""
 
@@ -1576,7 +1611,7 @@ class QzoneKitPlugin(Star):
 
         if left <= 0:
             # 离「每天那条总结」太近 ⇒ 不抢这个点：把冷却往后拉几小时，继续攒着一起发
-            if not force and self._in_avoid_window(now):
+            if not force and self._near_summary(now, self.instant_guard_min):
                 post = self.state.setdefault("post", {})
                 pending = self._fresh_fragments(pending)
                 pending.append(
@@ -1588,14 +1623,14 @@ class QzoneKitPlugin(Star):
                     }
                 )
                 pending = pending[-self.max_fragments :]
-                due = max(float(post.get("pending_due") or 0), self._avoid_window(now))
+                due = max(float(post.get("pending_due") or 0), self._instant_due(now))
                 post["pending"] = pending
                 post["pending_due"] = due
                 post["avoided_at"] = now
                 self._save_state()
                 minutes = (due - now) / 60.0
                 logger.info(
-                    "[QzoneKit] 现在正是每天 %s 那条总结的时间窗，先不发：挪到 %s（约 %s 分钟后），"
+                    "[QzoneKit] 现在贴着每天 %s 那条总结，先不发：挪到 %s（约 %s 分钟后），"
                     "已攒 %s 段",
                     self._daily_hm_text(),
                     self._fmt_ts(due),
@@ -1603,7 +1638,7 @@ class QzoneKitPlugin(Star):
                     len(pending),
                 )
                 return (
-                    f"先不发：现在正是{self._daily_hm_text()}那条每天总结的时间窗，怕挤一起。"
+                    f"先不发：现在正贴着{self._daily_hm_text()}那条每天总结，怕挤一起。"
                     f"挪到 {self._fmt_ts(due)} 再发，先攒着（现在 {len(pending)} 段）。"
                 )
             batch = await self._select_fragments(
@@ -1682,8 +1717,8 @@ class QzoneKitPlugin(Star):
                 )
                 return
             # 到点了，但正好撞上每天那条总结的时间窗 ⇒ 再往后挪，别一天两条
-            if self._in_avoid_window(now):
-                due = self._avoid_window(now)
+            if self._near_summary(now, self.instant_guard_min):
+                due = self._instant_due(now)
                 post["pending_due"] = due
                 post["pending"] = fresh
                 self._save_state()

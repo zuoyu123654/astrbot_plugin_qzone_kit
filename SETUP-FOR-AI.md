@@ -79,7 +79,7 @@ Added llm tool: qzone_delete_feeds
 Added llm tool: qzone_delete_feeds / qq_profile_update / qzone_post_summary
                 / qq_signature_maybe_change / qzone_mood_post
 [QzoneKit] 已启动：自动签名=True（平时 13~32 天 / 重要 22~29.2 小时）、
-           自动说说=True（平时 2~2.6 天 / 重要 22~29.2 小时）、判断间隔=45 分钟
+           自动说说=True（平时 2~3.6 天 / 重要 22~29.2 小时）、判断间隔=45 分钟
 [QzoneKit] 真发模式；表情包=True；一次性强制发=False
 ```
 
@@ -102,7 +102,7 @@ Added llm tool: qzone_delete_feeds / qq_profile_update / qzone_post_summary
   "signature_critical_max_hours": 29.2,
   "auto_post_enabled": true,
   "post_normal_min_days": 2,
-  "post_normal_max_days": 2.6,
+  "post_normal_max_days": 3.6,
   "post_critical_min_hours": 22,
   "post_critical_max_hours": 29.2,
   "post_max_fragments": 5,
@@ -124,7 +124,7 @@ Added llm tool: qzone_delete_feeds / qq_profile_update / qzone_post_summary
 | --- | --- | --- |
 | `signature_normal_min_days` / `_max_days` | 13 / 32 | 签名平时要「十几天到一个月」才动一次，太快就假 |
 | `signature_critical_min_hours` / `_max_hours` | 22 / 29.2 | 遇到大事允许缩短到「一天左右」，但别正好 24 小时（像定时任务） |
-| `post_normal_*` | 2 / 2.6 天 | 说说比签名勤，但也不能天天刷 |
+| `post_normal_*` | 2 / 3.6 天 | 说说比签名勤，但也不能天天刷 |
 | `post_critical_*` | 22 / 29.2 小时 | 强烈情绪/大事才允许一天一条 |
 | `post_fallback_days` | 3 | **保底**：3 天没发就要求她这轮必须发一条日常，避免长期沉默 |
 | `judge_interval_minutes` | 45 | 判断频率。调试时可以临时改 2~3（见 5.3），正式改回来 |
@@ -132,7 +132,8 @@ Added llm tool: qzone_delete_feeds / qq_profile_update / qzone_post_summary
 | `post_sticker_enabled` | true | 带表情包。**启用前必须问使用者同意**；来源是「表情包管理器」`meme_manager`（https://github.com/anka-afk/astrbot_plugin_meme_manager），用它**全部图包**（本机实测 2 个包共 331 张），GIF 原样发（保动画），其它格式转 JPEG |
 | `post_sticker_prob` | 0.75 | 3/4 的说说带图；**每日总结与即时说说共用这个概率**（插件会包一层 `publish_post`） |
 | `daily_post_time` | `23:00` | 每天总结几点（`HH:MM`）。改这里会同步改 QQ空间的排期与配置；在 QQ空间 那边改了这边也会跟过来。清空 = 每次现读 `publish_cron` |
-| `post_avoid_window_hours` | 1.5 | 每天总结前后**各**这么多小时不自己另发；撞上就往后推 |
+| `post_avoid_window_hours` | 1.5 | 攒着的那批：每天总结前后**各**这么多小时不落点 |
+| `post_instant_guard_minutes` / `post_instant_push_minutes` | 15 / 30 | 「现在就发」只避开前后 15 分钟，撞上就挪 30 分钟 |
 | `post_max_age_days` | 5 | 碎片最多留几天；超了不发，全过期就当已发过、进下一轮冷却 |
 | `post_boot_wait_minutes` / `post_boot_extra_min_minutes` / `_max_minutes` | 3 / 2 / 60 | 开机后先等 3 分钟，再随机多等 2~60 分钟才补发 |
 | `dry_run` | false | 试运行开关：true = 只判断、只写日志 |
@@ -286,7 +287,7 @@ def download_file(url: str):
 >   **但如果那个时间点电脑没开着 / 机器人没在线，当天的总结就不会发，也不会补发** —— 这是有意的：
 >   补发的总结里说「今天」其实是在说昨天，看着更怪。
 > - 自动改签名：**开**（平时 13~32 天一次，遇到大事 22~29.2 小时）
-> - 自动发说说：**开**（平时 2~2.6 天一条，3 天没发会保底一条）；
+> - 自动发说说：**开**（平时 2~3.6 天一条，3 天没发会保底一条）；
 >   跟每天总结挨太近会自动躲开（前后各 1.5 小时），躲开时重新抽一个时间；
 >   关机错过的，开机后 3 分钟 + 随机 2~60 分钟补发；攒超过 5 天的碎片直接丢掉，
 >   要是全过期了那次就不发、当已发过，重新开始冷却。

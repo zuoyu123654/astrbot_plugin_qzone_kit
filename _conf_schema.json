@@ -46,8 +46,8 @@
   },
   "post_normal_max_days": {
     "type": "float",
-    "description": "平时说说的冷却上限（天，默认 2.6）。",
-    "default": 2.6
+    "description": "平时说说的冷却上限（天，默认 3.6）。区间越大，抽到点时间时越容易避开每天总结。",
+    "default": 3.6
   },
   "post_critical_min_hours": {
     "type": "float",
@@ -73,6 +73,16 @@
     "type": "float",
     "description": "离「每天那条总结」前后几小时以内，就**不**自己另发一条（默认 1.5，即前后各 1.5 小时）。设 0 = 不管，想怎么发怎么发。",
     "default": 1.5
+  },
+  "post_instant_guard_minutes": {
+    "type": "float",
+    "description": "「现在就发」时只避开每天总结前后这么多分钟（默认 15）。攒着的那批不受这个影响，仍然避开整段窗口。",
+    "default": 15
+  },
+  "post_instant_push_minutes": {
+    "type": "float",
+    "description": "立刻想发但贴着总结时，往后挪多少分钟（默认 30），挪到离开上面那段为止。",
+    "default": 30
   },
   "post_max_age_days": {
     "type": "float",
