@@ -74,16 +74,6 @@
     "description": "离「每天那条总结」前后几小时以内，就**不**自己另发一条（默认 1.5，即前后各 1.5 小时）。设 0 = 不管，想怎么发怎么发。",
     "default": 1.5
   },
-  "post_shift_min_hours": {
-    "type": "float",
-    "description": "撞上那个时间窗时，往后推几小时（下限，默认 4）。推的这段时间内容继续攒着，到点一起发。",
-    "default": 4
-  },
-  "post_shift_max_hours": {
-    "type": "float",
-    "description": "往后推的小时数上限（默认 12）。实际在上下限之间随机，免得每次都是整点。",
-    "default": 12
-  },
   "post_max_age_days": {
     "type": "float",
     "description": "攒着的碎片最多留几天（默认 5）。超过这个天数的就不发了；要是全过期了，这次不发、但按「已发过」处理，直接进下一轮冷却。",

@@ -44,7 +44,7 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, StarTools, register
 
 PLUGIN_NAME = "astrbot_plugin_qzone_kit"
-PLUGIN_VERSION = "0.9.3"
+PLUGIN_VERSION = "0.9.4"
 
 QZONE_PLUGIN = "astrbot_plugin_qzone"
 QQPROFILE_STATUS = "astrbot_plugin_qqprofile"
@@ -191,16 +191,7 @@ class QzoneKitPlugin(Star):
             self.avoid_hours = max(0.0, float(cfg.get("post_avoid_window_hours", 1.5)))
         except (TypeError, ValueError):
             self.avoid_hours = 1.5
-        # 撞上了就往后推几小时（区间随机，默认 4~8），推的这段时间继续攒
-        try:
-            self.shift_min_h = max(0.5, float(cfg.get("post_shift_min_hours", 4)))
-        except (TypeError, ValueError):
-            self.shift_min_h = 4.0
-        try:
-            self.shift_max_h = max(self.shift_min_h, float(cfg.get("post_shift_max_hours", 12)))
-        except (TypeError, ValueError):
-            self.shift_max_h = 12.0
-        # 落点只参考「她平时的在线记录」，不设固定时段（人作息会变，设死反而假）
+        # 撞上了就等这个窗口过去（最多挪到窗口结束，不往后推几个小时）
         # 攒太久的碎片就不发了（默认 5 天），免得今天的说说讲上周的事
         try:
             self.max_age_days = max(0.0, float(cfg.get("post_max_age_days", 5)))
@@ -357,7 +348,6 @@ class QzoneKitPlugin(Star):
         if self.auto_signature or self.auto_post:
             self._task = asyncio.create_task(self._judge_loop())
         self._flush_task = asyncio.create_task(self._flush_loop())
-        self._presence_task = asyncio.create_task(self._presence_loop())
         logger.info(
             "[QzoneKit] 已启动：自动签名=%s（平时 %g~%g 天 / 重要 %g~%g 小时）、"
             "自动说说=%s（平时 %g~%g 天 / 重要 %g~%g 小时）、判断间隔≈%s 分钟%s",
@@ -383,12 +373,9 @@ class QzoneKitPlugin(Star):
         if self.auto_post:
             self._sync_daily_time()
             logger.info(
-                "[QzoneKit] 每天 %s 那条总结前后 %.1f 小时不自己发；撞上就往后推 %.0f~%.0f 小时继续攒"
-                "（推后按她平时的在线记录挑小时）",
+                "[QzoneKit] 每天 %s 那条总结前后 %.1f 小时内，她不另发；生成时间时就避开这个窗口",
                 self._daily_hm_text(),
                 self.avoid_hours,
-                self.shift_min_h,
-                self.shift_max_h,
             )
         try:
             logger.info("[QzoneKit] 依赖检查：%s", "；".join(self._partner_report()))
@@ -412,7 +399,7 @@ class QzoneKitPlugin(Star):
             )
 
     async def terminate(self) -> None:
-        for task in (self._task, self._flush_task, getattr(self, "_presence_task", None)):
+        for task in (self._task, self._flush_task):
             if task and not task.done():
                 task.cancel()
 
@@ -1139,145 +1126,31 @@ class QzoneKitPlugin(Star):
         diff = min(diff, 1440.0 - diff)  # 跨零点按环形算
         return diff <= self.avoid_hours * 60.0
 
-    def _pick_due(self, base: float) -> float:
-        """生成一个「不撞每天总结」的发布时间：本来就不撞就原样用，撞了就重新抽。
+    def _window_exit(self, ts: float) -> float:
+        """落在每天总结的时间窗里时，返回「这个窗口结束」的时间（+ 一点随机）。"""
 
-        抽法：往后 4~12 小时 → 按概率落到常在线的小时 → 看看撞不撞总结；
-        撞上就再抽一次，最多 40 次；真抽不出来就硬推到窗口外面。
+        hm = self._daily_hm()
+        span = timedelta(minutes=self.avoid_hours * 60)
+        d = datetime.fromtimestamp(ts)
+        anchor = d.replace(hour=hm[0], minute=hm[1], second=0, microsecond=0)
+        exits = []
+        for day in (-1, 0, 1):
+            a = anchor + timedelta(days=day)
+            end = a + span
+            if a - span <= d < end:  # d 在这个窗口里
+                exits.append(end)
+        if not exits:
+            return ts
+        end = min(exits)
+        return end.timestamp() + random.uniform(60, 25 * 60)
+
+    def _avoid_window(self, ts: float) -> float:
+        """生成发布时间用：不在窗里就原样；撞上了就挪到窗外（窗口刚结束那会儿）。
+
+        就这么一步，不做「往后推 4~12 小时」那套。
         """
 
-        if not self._in_avoid_window(base) and base > time.time() + 60:
-            return base
-        candidate = base
-        for _ in range(40):
-            candidate += random.uniform(self.shift_min_h, self.shift_max_h) * 3600.0
-            due = self._settle_time(candidate)
-            if not self._in_avoid_window(due):
-                return due
-            candidate = due
-        due = candidate + self.shift_min_h * 3600.0
-        while self._in_avoid_window(due):
-            due += 1800.0
-        return due
-
-    @staticmethod
-    def _hour_ts(base: float, hour: int, minute: int = 0) -> float:
-        """base 那天的 hour:minute 的时间戳（用来试着算某个整点撞不撞窗口）。"""
-
-        d = datetime.fromtimestamp(base)
-        return d.replace(hour=hour, minute=minute, second=0, microsecond=0).timestamp()
-
-    def _settle_time(self, due: float) -> float:
-        """按她平时的在线记录挑一个小时落点；没记录就原样用。
-
-        不设固定时段——作息会变，写死「9 点到 23 点」反而假；
-        只参考「她平时这个点开机没」。
-        """
-
-        presence = self._hour_presence()
-        if not presence:
-            return due
-        # 挑「整点都躲得开总结窗口」的小时（21:30~00:30 这种，就把 21~00 点排除），
-        # 这样落点一次就安全，不用来回重抽
-        hours = [
-            h
-            for h in range(24)
-            if not self._in_avoid_window(self._hour_ts(due, h, 0))
-            and not self._in_avoid_window(self._hour_ts(due, h, 30))
-        ]
-        if not hours:
-            return due
-        weights = [presence[h] for h in hours]
-        if max(weights) - min(weights) < 1e-6:  # 各小时没差别，别白折腾
-            return due
-        hour = random.choices(hours, weights=weights)[0]
-
-        # 取「离原定时间最近」的那一次这个点（±12 小时内），别一杆子支到第二天
-        d = datetime.fromtimestamp(due)
-        cand = d.replace(
-            hour=hour, minute=random.randint(0, 59), second=0, microsecond=0
-        )
-        delta = cand.timestamp() - due
-        if delta > 12 * 3600:
-            cand -= timedelta(days=1)
-        elif delta < -12 * 3600:
-            cand += timedelta(days=1)
-        # 别落到过去（比如推后点在凌晨、抽到晚上 22 点，就近取会取到昨天）
-        now_min = time.time() + 1800
-        while cand.timestamp() < now_min:
-            cand += timedelta(days=1)
-        return cand.timestamp()
-
-    # ── 在线时段记录：整点采一次，常在线的小时更容易被选中 ───────────────
-    def _hour_presence(self) -> dict[int, float] | None:
-        """每小时在线概率（向全局平均收缩）；一条记录都没有就返回 None。"""
-
-        on = [0] * 24
-        off = [0] * 24
-        for item in self.state.get("online_log") or []:
-            try:
-                hour = int(str(item.get("h") or "")[-2:])
-            except ValueError:
-                continue
-            if 0 <= hour < 24:
-                if item.get("on"):
-                    on[hour] += 1
-                else:
-                    off[hour] += 1
-        total = sum(on) + sum(off)
-        if total <= 0:
-            return None
-        base = sum(on) / total
-        k = 2.0  # 记录少的钟点往全局平均上靠，免得一天两次记录就当成铁律
-        return {h: (on[h] + k * base) / (on[h] + off[h] + k) for h in range(24)}
-
-    def _trim_online_log(self) -> None:
-        log = self.state.get("online_log") or []
-        # 只留最近 30 天，别把 state.json 撑大
-        cutoff = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d %H")
-        self.state["online_log"] = [
-            e for e in log if str(e.get("h") or "") >= cutoff
-        ][-1200:]
-
-    def _mark_hour(self, ts: float, on: bool) -> None:
-        """记一笔：ts 所在的那个整点，在线 / 不在线（同一小时只记一次）。"""
-
-        key = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H")
-        log = self.state.setdefault("online_log", [])
-        if any(str(e.get("h") or "") == key for e in log):
-            return
-        log.append({"h": key, "on": on})
-        self._trim_online_log()
-
-    def _mark_gap(self, start: float, end: float) -> None:
-        """start~end 之间整段的整点都记成「不在线」（关机/睡死）。"""
-
-        t = datetime.fromtimestamp(start).replace(
-            minute=0, second=0, microsecond=0
-        ) + timedelta(hours=1)
-        stop = datetime.fromtimestamp(end).replace(minute=0, second=0, microsecond=0)
-        while t < stop:
-            self._mark_hour(t.timestamp(), False)
-            t += timedelta(hours=1)
-
-    def _presence_tick(self) -> None:
-        """每 10 分钟叫一次：当前整点记成在线；中间断档很久的，补成不在线。"""
-
-        now = time.time()
-        last = float(self.state.get("last_seen") or 0)
-        if last and now - last > 5400:  # 超过 1.5 小时没动静 ⇒ 中间那几个整点算不在
-            self._mark_gap(last, now)
-        self._mark_hour(now, on=True)
-        self.state["last_seen"] = now
-        self._save_state()
-
-    async def _presence_loop(self) -> None:
-        while True:
-            try:
-                self._presence_tick()
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("[QzoneKit] 记录在线时段出错：%s", exc)
-            await asyncio.sleep(600)
+        return ts if not self._in_avoid_window(ts) else self._window_exit(ts)
 
     def _fresh_fragments(self, fragments: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """丢掉攒太久的碎片（默认 >5 天就不发了）。"""
@@ -1701,24 +1574,23 @@ class QzoneKitPlugin(Star):
                     }
                 )
                 pending = pending[-self.max_fragments :]
-                due = max(float(post.get("pending_due") or 0), self._pick_due(now))
+                due = max(float(post.get("pending_due") or 0), self._avoid_window(now))
                 post["pending"] = pending
                 post["pending_due"] = due
                 post["avoided_at"] = now
                 self._save_state()
-                hours = (due - now) / 3600.0
+                minutes = (due - now) / 60.0
                 logger.info(
-                    "[QzoneKit] 撞上每天 %s 那条总结，先不发：冷却推后 %.1f 小时（到 %s），"
+                    "[QzoneKit] 现在正是每天 %s 那条总结的时间窗，先不发：挪到 %s（约 %s 分钟后），"
                     "已攒 %s 段",
                     self._daily_hm_text(),
-                    hours,
                     self._fmt_ts(due),
+                    f"{minutes:.0f}",
                     len(pending),
                 )
                 return (
-                    f"先不发：{self._daily_hm_text()} 那条每天总结就在附近，怕一天两条挤一起。"
-                    f"往后推了大约 {hours:.0f} 小时（到 {self._fmt_ts(due)}），"
-                    f"先攒着（现在 {len(pending)} 段），到时候一起发。"
+                    f"先不发：现在正是{self._daily_hm_text()}那条每天总结的时间窗，怕挤一起。"
+                    f"挪到 {self._fmt_ts(due)} 再发，先攒着（现在 {len(pending)} 段）。"
                 )
             batch = await self._select_fragments(
                 self._fresh_fragments(pending)
@@ -1751,7 +1623,7 @@ class QzoneKitPlugin(Star):
         # 同样：攒着的这一批只定一次到点时间，后加的片段不推迟它
         if not float(post.get("pending_due") or 0):
             base_due = last + need if last else now
-            post["pending_due"] = self._pick_due(base_due)
+            post["pending_due"] = self._avoid_window(base_due)
         self._save_state()
         hours = left / 3600.0
         logger.info(
@@ -1796,7 +1668,7 @@ class QzoneKitPlugin(Star):
                 return
             # 到点了，但正好撞上每天那条总结的时间窗 ⇒ 再往后挪，别一天两条
             if self._in_avoid_window(now):
-                due = self._pick_due(now)
+                due = self._avoid_window(now)
                 post["pending_due"] = due
                 post["pending"] = fresh
                 self._save_state()
