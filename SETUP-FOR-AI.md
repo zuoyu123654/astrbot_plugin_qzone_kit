@@ -134,7 +134,8 @@ Added llm tool: qzone_delete_feeds / qq_profile_update / qzone_post_summary
 | `daily_post_time` | `23:00` | 每天总结几点（`HH:MM`）。改这里会同步改 QQ空间的排期与配置；在 QQ空间 那边改了这边也会跟过来。清空 = 每次现读 `publish_cron` |
 | `post_avoid_window_hours` | 1.5 | 每天总结前后**各**这么多小时不自己另发；撞上就往后推 |
 | `post_shift_min_hours` / `_max_hours` | 4 / 12 | 推后的小时数区间（这个区间里随机） |
-| `post_active_hours` | `09:00-23:00` | 推后的目标要落在这个时段（空 = 不限），别推到凌晨注定又错过 |
+| `post_active_hours` | `09:00-23:00` | 活跃时段（空 = 不限） |
+| `post_active_hit_prob` | 0.8 | 推后的发布 80% 落进活跃时段，20% 保持原样；具体几点按整点在线记录加权 |
 | `post_max_age_days` | 5 | 碎片最多留几天；超了不发，全过期就当已发过、进下一轮冷却 |
 | `post_boot_wait_minutes` / `post_boot_extra_min_minutes` / `_max_minutes` | 3 / 2 / 60 | 开机后先等 3 分钟，再随机多等 2~60 分钟才补发 |
 | `dry_run` | false | 试运行开关：true = 只判断、只写日志 |

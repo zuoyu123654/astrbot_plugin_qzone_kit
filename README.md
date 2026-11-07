@@ -151,7 +151,8 @@ AI 配置时先看一眼 `data/plugins/astrbot_plugin_private_companion/metadata
 | 情况 | 怎么处理 |
 | --- | --- |
 | 开机 / 重载插件 | 先等 `post_boot_wait_minutes`（默认 3 分钟，等 CQHttp 绑好），再随机多等 2~60 分钟，才检查攒着的 |
-| 到点了但撞上每天总结的时间窗 | 往后推 4~12 小时，并且**挪进她平时在线的时段**（`post_active_hours`，默认 09:00~23:00），别推到凌晨四点注定又错过 |
+| 到点了但撞上每天总结的时间窗 | 往后推 4~12 小时；其中**80%**（`post_active_hit_prob`）会落进她平时在线的时段（`post_active_hours`，默认 09:00~23:00），剩下 20% 保持原样、可能落在深夜 |
+| 挑具体几点 | 不是随机均匀落，而是**按她的在线记录加权**：插件每 10 分钟看一次、整点记一笔（`online_log`），常在线的小时更容易被选中，几乎没在线过的时段概率低。中间断档超过 1.5 小时的整点会记成「不在线」 |
 | 攒的碎片太旧 | 超过 `post_max_age_days`（默认 5 天）的直接不发 |
 | 全过期了、没东西可发 | 那天就不发；但按「已经发过」处理，直接进下一轮冷却，不会一开机就补一堆陈年旧事 |
 | 补发时内容属于前几天 | 合成时把时间喂给模型，要求写「昨晚」「前两天」，不许写「今天」 |
@@ -172,7 +173,8 @@ AI 配置时先看一眼 `data/plugins/astrbot_plugin_private_companion/metadata
 | `daily_post_time` | `23:00` | 每天总结几点发（`HH:MM`）。改这里会同步改 QQ空间的排期与配置；在 QQ空间 那边改了这边也会跟过来。清空 = 每次现读 `publish_cron` |
 | `post_avoid_window_hours` | 1.5 | 每天总结前后各多少小时内不自己另发（0 = 不管） |
 | `post_shift_min_hours` / `_max_hours` | 4 / 12 | 撞上就往后推几小时（区间随机），推的这段时间继续攒 |
-| `post_active_hours` | `09:00-23:00` | 推后的目标要落在这个时段里，别推到凌晨（空 = 不限） |
+| `post_active_hours` | `09:00-23:00` | 活跃时段（空 = 不限） |
+| `post_active_hit_prob` | 0.8 | 推后有多少比例落进活跃时段；具体几点按在线记录加权 |
 | `post_max_age_days` | 5 | 碎片最多留几天，超了不发；全过期就当已发过、进下一轮冷却 |
 | `post_boot_wait_minutes` / `post_boot_extra_min_minutes` / `_max_minutes` | 3 / 2 / 60 | 开机后先等 3 分钟，再多随机等 2~60 分钟才检查 |
 | `post_select_threshold` | 4 | 超过几条才筛选（4 = 大于三条才挑） |

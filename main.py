@@ -44,7 +44,7 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, StarTools, register
 
 PLUGIN_NAME = "astrbot_plugin_qzone_kit"
-PLUGIN_VERSION = "0.8.9"
+PLUGIN_VERSION = "0.9.0"
 
 QZONE_PLUGIN = "astrbot_plugin_qzone"
 QQPROFILE_STATUS = "astrbot_plugin_qqprofile"
@@ -202,6 +202,11 @@ class QzoneKitPlugin(Star):
             self.shift_max_h = 12.0
         # 推后的目标尽量收进「她平时在线的时段」，别推到凌晨 4 点注定错过
         self.active_hours = str(cfg.get("post_active_hours", "09:00-23:00") or "").strip()
+        # 但不是每一把都硬塞进去：默认只有 80% 的发布落在活跃时段，剩下 20% 保持原样
+        try:
+            self.active_hit_prob = max(0.0, min(1.0, float(cfg.get("post_active_hit_prob", 0.8))))
+        except (TypeError, ValueError):
+            self.active_hit_prob = 0.8
         # 攒太久的碎片就不发了（默认 5 天），免得今天的说说讲上周的事
         try:
             self.max_age_days = max(0.0, float(cfg.get("post_max_age_days", 5)))
@@ -358,6 +363,7 @@ class QzoneKitPlugin(Star):
         if self.auto_signature or self.auto_post:
             self._task = asyncio.create_task(self._judge_loop())
         self._flush_task = asyncio.create_task(self._flush_loop())
+        self._presence_task = asyncio.create_task(self._presence_loop())
         logger.info(
             "[QzoneKit] 已启动：自动签名=%s（平时 %g~%g 天 / 重要 %g~%g 小时）、"
             "自动说说=%s（平时 %g~%g 天 / 重要 %g~%g 小时）、判断间隔≈%s 分钟%s",
@@ -384,11 +390,13 @@ class QzoneKitPlugin(Star):
             self._sync_daily_time()
             logger.info(
                 "[QzoneKit] 每天 %s 那条总结前后 %.1f 小时不自己发；撞上就往后推 %.0f~%.0f 小时继续攒"
-                "（时间从 QQ空间插件的 publish_cron 现读，改了会自动跟上）",
+                "（其中 %.0f%% 落进活跃时段 %s，具体几点按在线记录加权）",
                 self._daily_hm_text(),
                 self.avoid_hours,
                 self.shift_min_h,
                 self.shift_max_h,
+                self.active_hit_prob * 100,
+                self.active_hours or "不限",
             )
         try:
             logger.info("[QzoneKit] 依赖检查：%s", "；".join(self._partner_report()))
@@ -412,7 +420,7 @@ class QzoneKitPlugin(Star):
             )
 
     async def terminate(self) -> None:
-        for task in (self._task, self._flush_task):
+        for task in (self._task, self._flush_task, getattr(self, "_presence_task", None)):
             if task and not task.done():
                 task.cancel()
 
@@ -1140,17 +1148,116 @@ class QzoneKitPlugin(Star):
         return diff <= self.avoid_hours * 60.0
 
     def _polish_due(self, ts: float) -> float:
-        """该发的时间如果撞上每天总结，就往后推几小时，再收进她的活跃时段。"""
+        """该发的时间如果撞上每天总结，就往后推几小时，再按概率落进她常在线的时间。"""
 
         due = ts
         if self._in_avoid_window(due):
             due += random.uniform(self.shift_min_h, self.shift_max_h) * 3600.0
-        due = self._clamp_to_active(due)
-        # 收进活跃时段后万一又贴回总结窗口（两个区间有重叠时），再挪一次
+        due = self._settle_time(due)
+        # 落回来又贴到总结窗口（两个区间有重叠时），再挪一次
         if self._in_avoid_window(due):
             due += random.uniform(self.shift_min_h, self.shift_max_h) * 3600.0
-            due = self._clamp_to_active(due)
+            due = self._settle_time(due)
         return due
+
+    def _settle_time(self, due: float) -> float:
+        """80%（默认）按她常在线的小时落点，剩下 20% 保持原样（可能落在夜里）。"""
+
+        if random.random() >= self.active_hit_prob:
+            return due
+        span = self._active_span()
+        if span is None:
+            return due
+        start, end = span
+
+        def in_span(h: int) -> bool:
+            m = h * 60
+            return (start <= m < end) if start < end else (m >= start or m < end)
+
+        hours = [h for h in range(24) if in_span(h)]
+        if not hours:
+            return due
+        presence = self._hour_presence()
+        weights = [presence.get(h, 0.5) for h in hours]
+        hour = random.choices(hours, weights=weights)[0]
+
+        # 取「离原定时间最近」的那一次这个点（±12 小时内），别一杆子支到第二天
+        d = datetime.fromtimestamp(due)
+        cand = d.replace(
+            hour=hour, minute=random.randint(0, 59), second=0, microsecond=0
+        )
+        delta = cand.timestamp() - due
+        if delta > 12 * 3600:
+            cand -= timedelta(days=1)
+        elif delta < -12 * 3600:
+            cand += timedelta(days=1)
+        return cand.timestamp()
+
+    # ── 在线时段记录：整点采一次，常在线的小时更容易被选中 ───────────────
+    def _hour_presence(self) -> dict[int, float]:
+        """每个小时「在线」的可信度（0~1 左右，带平滑，没记录就是 0.5）。"""
+
+        on = [0] * 24
+        off = [0] * 24
+        for item in self.state.get("online_log") or []:
+            try:
+                hour = int(str(item.get("h") or "")[-2:])
+            except ValueError:
+                continue
+            if 0 <= hour < 24:
+                if item.get("on"):
+                    on[hour] += 1
+                else:
+                    off[hour] += 1
+        return {h: (on[h] + 0.5) / (on[h] + off[h] + 1.0) for h in range(24)}
+
+    def _trim_online_log(self) -> None:
+        log = self.state.get("online_log") or []
+        # 只留最近 30 天，别把 state.json 撑大
+        cutoff = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d %H")
+        self.state["online_log"] = [
+            e for e in log if str(e.get("h") or "") >= cutoff
+        ][-1200:]
+
+    def _mark_hour(self, ts: float, on: bool) -> None:
+        """记一笔：ts 所在的那个整点，在线 / 不在线（同一小时只记一次）。"""
+
+        key = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H")
+        log = self.state.setdefault("online_log", [])
+        if any(str(e.get("h") or "") == key for e in log):
+            return
+        log.append({"h": key, "on": on})
+        self._trim_online_log()
+
+    def _mark_gap(self, start: float, end: float) -> None:
+        """start~end 之间整段的整点都记成「不在线」（关机/睡死）。"""
+
+        t = datetime.fromtimestamp(start).replace(
+            minute=0, second=0, microsecond=0
+        ) + timedelta(hours=1)
+        stop = datetime.fromtimestamp(end).replace(minute=0, second=0, microsecond=0)
+        while t < stop:
+            self._mark_hour(t.timestamp(), False)
+            t += timedelta(hours=1)
+
+    def _presence_tick(self) -> None:
+        """每 10 分钟叫一次：当前整点记成在线；中间断档很久的，补成不在线。"""
+
+        now = time.time()
+        last = float(self.state.get("last_seen") or 0)
+        if last and now - last > 5400:  # 超过 1.5 小时没动静 ⇒ 中间那几个整点算不在
+            self._mark_gap(last, now)
+        self._mark_hour(now, on=True)
+        self.state["last_seen"] = now
+        self._save_state()
+
+    async def _presence_loop(self) -> None:
+        while True:
+            try:
+                self._presence_tick()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[QzoneKit] 记录在线时段出错：%s", exc)
+            await asyncio.sleep(600)
 
     def _active_span(self) -> tuple[int, int] | None:
         """她平时在线的时段（分钟），比如 "09:00-23:00"。"""
@@ -1165,26 +1272,6 @@ class QzoneKitPlugin(Star):
         a, b = start[0] * 60 + start[1], end[0] * 60 + end[1]
         return (a, b) if a != b else None
 
-    def _clamp_to_active(self, ts: float) -> float:
-        """落在活跃时段外就挪到最近的「开始」（再加点随机，别整点）。"""
-
-        span = self._active_span()
-        if span is None:
-            return ts
-        start, end = span
-        t = datetime.fromtimestamp(ts)
-        cur = t.hour * 60 + t.minute
-        inside = (start <= cur < end) if start < end else (cur >= start or cur < end)
-        if inside:
-            return ts
-
-        begin = t.replace(hour=0, minute=0, second=0, microsecond=0)
-        target = begin + timedelta(minutes=start)
-        if start < end and cur >= end:
-            # 今天已经收工了 ⇒ 明天开始
-            target += timedelta(days=1)
-        target += timedelta(seconds=random.uniform(0, 2700))
-        return target.timestamp()
 
     def _fresh_fragments(self, fragments: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """丢掉攒太久的碎片（默认 >5 天就不发了）。"""
