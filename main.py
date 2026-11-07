@@ -44,7 +44,7 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, StarTools, register
 
 PLUGIN_NAME = "astrbot_plugin_qzone_kit"
-PLUGIN_VERSION = "0.9.7"
+PLUGIN_VERSION = "0.9.8"
 
 QZONE_PLUGIN = "astrbot_plugin_qzone"
 QQPROFILE_STATUS = "astrbot_plugin_qqprofile"
@@ -173,8 +173,8 @@ class QzoneKitPlugin(Star):
         self.auto_signature = bool(cfg.get("auto_signature_enabled", True))
         self.auto_post = bool(cfg.get("auto_post_enabled", True))
         # 改签名：平时 12~16.1 天；非常重要 22~29.2 小时
-        self.sig_min_days = float(cfg.get("signature_normal_min_days", 12) or 12)
-        self.sig_max_days = float(cfg.get("signature_normal_max_days", 16.1) or 16.1)
+        self.sig_min_days = float(cfg.get("signature_normal_min_days", 13) or 13)
+        self.sig_max_days = float(cfg.get("signature_normal_max_days", 32) or 32)
         self.sig_crit_min_h = float(cfg.get("signature_critical_min_hours", 22) or 22)
         self.sig_crit_max_h = float(cfg.get("signature_critical_max_hours", 29.2) or 29.2)
         # 发说说：平时 2~3.6 天；非常重要 22~29.2 小时

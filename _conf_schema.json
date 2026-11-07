@@ -17,12 +17,12 @@
   "signature_normal_min_days": {
     "type": "float",
     "description": "平时改签名的冷却下限（天，默认 12）。每次都会在上下限之间随机落一个。",
-    "default": 12
+    "default": 13
   },
   "signature_normal_max_days": {
     "type": "float",
     "description": "平时改签名的冷却上限（天，默认 16.1）。",
-    "default": 16.1
+    "default": 32
   },
   "signature_critical_min_hours": {
     "type": "float",
