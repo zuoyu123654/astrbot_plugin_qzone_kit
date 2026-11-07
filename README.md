@@ -171,6 +171,7 @@ AI 配置时先看一眼 `data/plugins/astrbot_plugin_private_companion/metadata
 | `post_critical_min_hours` / `_max_hours` | 22 / 29.2 | 非常重要时的区间（小时） |
 | `post_max_fragments` | 5 | 冷却里最多攒几段 |
 | `daily_post_time` | `23:00` | 每天总结几点发（`HH:MM`）。改这里会同步改 QQ空间的排期与配置；在 QQ空间 那边改了这边也会跟过来。清空 = 每次现读 `publish_cron` |
+| `daily_post_sync_qzone` | true | 是否允许本插件改 QQ空间 的 `publish_cron`。关掉 = 只读，不动别人的配置 |
 | `post_avoid_window_hours` | 1.5 | 攒着的那批：每天总结前后各多少小时内不落点（0 = 不管） |
 | `post_instant_guard_minutes` | 15 | 「现在就发」只避开总结前后这么多分钟 |
 | `post_instant_push_minutes` | 30 | 立刻想发却贴着总结时，往后挪这么多分钟 |

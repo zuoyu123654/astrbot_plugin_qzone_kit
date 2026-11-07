@@ -44,7 +44,7 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, StarTools, register
 
 PLUGIN_NAME = "astrbot_plugin_qzone_kit"
-PLUGIN_VERSION = "0.9.6"
+PLUGIN_VERSION = "0.9.7"
 
 QZONE_PLUGIN = "astrbot_plugin_qzone"
 QQPROFILE_STATUS = "astrbot_plugin_qqprofile"
@@ -200,6 +200,9 @@ class QzoneKitPlugin(Star):
             self.instant_push_min = max(1.0, float(cfg.get("post_instant_push_minutes", 30)))
         except (TypeError, ValueError):
             self.instant_push_min = 30.0
+        # 是否允许本插件去改 QQ空间插件的 publish_cron（同步每天总结的时间）。
+        # 关掉就只「读」它的时间，绝不写别人的配置、也不去重排它的定时。
+        self.sync_qzone_schedule = bool(cfg.get("daily_post_sync_qzone", True))
         # 攒着的那批：抽到点时间撞上整段窗口就重抽（不往后推几个小时）
         # 攒太久的碎片就不发了（默认 5 天），免得今天的说说讲上周的事
         try:
@@ -1285,6 +1288,11 @@ class QzoneKitPlugin(Star):
                 hm_text,
                 self.avoid_hours,
             )
+
+        if not self.sync_qzone_schedule:
+            # 用户关掉了：只读时间，不写 QQ空间 的配置、也不动它的排期
+            self._cron_applied = None
+            return
 
         desired = self._desired_cron()
         if not desired:

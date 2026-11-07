@@ -132,6 +132,7 @@ Added llm tool: qzone_delete_feeds / qq_profile_update / qzone_post_summary
 | `post_sticker_enabled` | true | 带表情包。**启用前必须问使用者同意**；来源是「表情包管理器」`meme_manager`（https://github.com/anka-afk/astrbot_plugin_meme_manager），用它**全部图包**（本机实测 2 个包共 331 张），GIF 原样发（保动画），其它格式转 JPEG |
 | `post_sticker_prob` | 0.75 | 3/4 的说说带图；**每日总结与即时说说共用这个概率**（插件会包一层 `publish_post`） |
 | `daily_post_time` | `23:00` | 每天总结几点（`HH:MM`）。改这里会同步改 QQ空间的排期与配置；在 QQ空间 那边改了这边也会跟过来。清空 = 每次现读 `publish_cron` |
+| `daily_post_sync_qzone` | true | 是否允许本插件改 QQ空间 的 `publish_cron`（关掉 = 只读） |
 | `post_avoid_window_hours` | 1.5 | 攒着的那批：每天总结前后**各**这么多小时不落点 |
 | `post_instant_guard_minutes` / `post_instant_push_minutes` | 15 / 30 | 「现在就发」只避开前后 15 分钟，撞上就挪 30 分钟 |
 | `post_max_age_days` | 5 | 碎片最多留几天；超了不发，全过期就当已发过、进下一轮冷却 |

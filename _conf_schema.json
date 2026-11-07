@@ -69,6 +69,11 @@
     "description": "每天那条「今天的总结」几点发（HH:MM，默认 23:00）。改这里，QQ空间插件的 AutoPublish 会跟着改（运行中重排 + 写回配置）；要是在 QQ空间 插件那边改了时间，这边也会跟着变。自己发说说会避开这个点前后一段时间。",
     "default": "23:00"
   },
+  "daily_post_sync_qzone": {
+    "type": "bool",
+    "description": "允许本插件把「每天总结的时间」同步给 QQ空间 插件（会改它的 publish_cron 并重排 AutoPublish）。默认开；关掉就只读取它的时间，绝不写对方配置。",
+    "default": true
+  },
   "post_avoid_window_hours": {
     "type": "float",
     "description": "离「每天那条总结」前后几小时以内，就**不**自己另发一条（默认 1.5，即前后各 1.5 小时）。设 0 = 不管，想怎么发怎么发。",
