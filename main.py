@@ -1,4 +1,4 @@
-"""空间小助手（AstrBot 插件）。
+﻿"""空间小助手（AstrBot 插件）。
 
 把「QQ 空间 / QQ 资料」这几件事收成**一个插件**，只依赖 `astrbot_plugin_qzone`（删/发说说、Cookie）
 和 `astrbot_plugin_qqprofile`（只借它的状态表；不装也能跑）。**不调用任何别的插件**。
@@ -44,7 +44,7 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, StarTools, register
 
 PLUGIN_NAME = "astrbot_plugin_qzone_kit"
-PLUGIN_VERSION = "0.9.1"
+PLUGIN_VERSION = "0.9.2"
 
 QZONE_PLUGIN = "astrbot_plugin_qzone"
 QQPROFILE_STATUS = "astrbot_plugin_qqprofile"
@@ -1147,18 +1147,33 @@ class QzoneKitPlugin(Star):
         diff = min(diff, 1440.0 - diff)  # 跨零点按环形算
         return diff <= self.avoid_hours * 60.0
 
-    def _polish_due(self, ts: float) -> float:
-        """该发的时间如果撞上每天总结，就往后推几小时，再按概率落进她常在线的时间。"""
+    def _pick_due(self, base: float) -> float:
+        """生成一个「不撞每天总结」的发布时间：本来就不撞就原样用，撞了就重新抽。
 
-        due = ts
-        if self._in_avoid_window(due):
-            due += random.uniform(self.shift_min_h, self.shift_max_h) * 3600.0
-        due = self._settle_time(due)
-        # 落回来又贴到总结窗口（两个区间有重叠时），再挪一次
-        if self._in_avoid_window(due):
-            due += random.uniform(self.shift_min_h, self.shift_max_h) * 3600.0
-            due = self._settle_time(due)
+        抽法：往后 4~12 小时 → 按概率落到常在线的小时 → 看看撞不撞总结；
+        撞上就再抽一次，最多 40 次；真抽不出来就硬推到窗口外面。
+        """
+
+        if not self._in_avoid_window(base):
+            return base
+        candidate = base
+        for _ in range(40):
+            candidate += random.uniform(self.shift_min_h, self.shift_max_h) * 3600.0
+            due = self._settle_time(candidate)
+            if not self._in_avoid_window(due):
+                return due
+            candidate = due
+        due = candidate + self.shift_min_h * 3600.0
+        while self._in_avoid_window(due):
+            due += 1800.0
         return due
+
+    @staticmethod
+    def _hour_ts(base: float, hour: int, minute: int = 0) -> float:
+        """base 那天的 hour:minute 的时间戳（用来试着算某个整点撞不撞窗口）。"""
+
+        d = datetime.fromtimestamp(base)
+        return d.replace(hour=hour, minute=minute, second=0, microsecond=0).timestamp()
 
     def _settle_time(self, due: float) -> float:
         """80%（默认）按她常在线的小时落点，剩下 20% 保持原样（可能落在夜里）。"""
@@ -1177,6 +1192,16 @@ class QzoneKitPlugin(Star):
         hours = [h for h in range(24) if in_span(h)]
         if not hours:
             return due
+        # 挑「整点都躲得开总结窗口」的小时（21:30~00:30 这种，就把 21~00 点排除掉），
+        # 这样落点一次就安全，不用来回重抽
+        safe_hours = [
+            h
+            for h in hours
+            if not self._in_avoid_window(self._hour_ts(due, h, 0))
+            and not self._in_avoid_window(self._hour_ts(due, h, 30))
+        ]
+        if safe_hours:
+            hours = safe_hours
         presence = self._hour_presence()
         weights = [presence.get(h, 0.5) for h in hours]
         hour = random.choices(hours, weights=weights)[0]
@@ -1699,7 +1724,7 @@ class QzoneKitPlugin(Star):
                     }
                 )
                 pending = pending[-self.max_fragments :]
-                due = max(float(post.get("pending_due") or 0), self._polish_due(now))
+                due = max(float(post.get("pending_due") or 0), self._pick_due(now))
                 post["pending"] = pending
                 post["pending_due"] = due
                 post["avoided_at"] = now
@@ -1749,7 +1774,7 @@ class QzoneKitPlugin(Star):
         # 同样：攒着的这一批只定一次到点时间，后加的片段不推迟它
         if not float(post.get("pending_due") or 0):
             base_due = last + need if last else now
-            post["pending_due"] = self._polish_due(base_due)
+            post["pending_due"] = self._pick_due(base_due)
         self._save_state()
         hours = left / 3600.0
         logger.info(
@@ -1794,7 +1819,7 @@ class QzoneKitPlugin(Star):
                 return
             # 到点了，但正好撞上每天那条总结的时间窗 ⇒ 再往后挪，别一天两条
             if self._in_avoid_window(now):
-                due = self._polish_due(now)
+                due = self._pick_due(now)
                 post["pending_due"] = due
                 post["pending"] = fresh
                 self._save_state()
