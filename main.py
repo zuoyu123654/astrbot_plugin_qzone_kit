@@ -44,7 +44,7 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, StarTools, register
 
 PLUGIN_NAME = "astrbot_plugin_qzone_kit"
-PLUGIN_VERSION = "0.9.4"
+PLUGIN_VERSION = "0.9.5"
 
 QZONE_PLUGIN = "astrbot_plugin_qzone"
 QQPROFILE_STATUS = "astrbot_plugin_qqprofile"
@@ -1145,12 +1145,26 @@ class QzoneKitPlugin(Star):
         return end.timestamp() + random.uniform(60, 25 * 60)
 
     def _avoid_window(self, ts: float) -> float:
-        """生成发布时间用：不在窗里就原样；撞上了就挪到窗外（窗口刚结束那会儿）。
-
-        就这么一步，不做「往后推 4~12 小时」那套。
-        """
+        """现在就要发、但正撞窗口：没别的时间可选，只能等这个窗口过去。"""
 
         return ts if not self._in_avoid_window(ts) else self._window_exit(ts)
+
+    def _roll_queued_time(self, last: float, level: str) -> float:
+        """给「攒着的那批」抽一个到点时间：撞上总结窗口就重新抽，直到不撞。
+
+        冷却本来就是随机区间，重抽一个就行——不用往后推几个小时。
+        """
+
+        due = last + self._post_cooldown(level)
+        for _ in range(60):
+            if not self._in_avoid_window(due):
+                return due
+            logger.debug(
+                "[QzoneKit] 抽到的到点时间 %s 撞上每天总结，重新抽",
+                self._fmt_ts(due),
+            )
+            due = last + self._post_cooldown(level)
+        return self._window_exit(due)
 
     def _fresh_fragments(self, fragments: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """丢掉攒太久的碎片（默认 >5 天就不发了）。"""
@@ -1622,8 +1636,9 @@ class QzoneKitPlugin(Star):
         post["pending"] = pending
         # 同样：攒着的这一批只定一次到点时间，后加的片段不推迟它
         if not float(post.get("pending_due") or 0):
-            base_due = last + need if last else now
-            post["pending_due"] = self._avoid_window(base_due)
+            post["pending_due"] = (
+                self._roll_queued_time(last, importance) if last else now
+            )
         self._save_state()
         hours = left / 3600.0
         logger.info(
