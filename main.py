@@ -44,7 +44,7 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, StarTools, register
 
 PLUGIN_NAME = "astrbot_plugin_qzone_kit"
-PLUGIN_VERSION = "0.9.0"
+PLUGIN_VERSION = "0.9.1"
 
 QZONE_PLUGIN = "astrbot_plugin_qzone"
 QQPROFILE_STATUS = "astrbot_plugin_qqprofile"
@@ -1190,6 +1190,10 @@ class QzoneKitPlugin(Star):
         if delta > 12 * 3600:
             cand -= timedelta(days=1)
         elif delta < -12 * 3600:
+            cand += timedelta(days=1)
+        # 别落到过去（比如推后点在凌晨、抽到晚上 22 点，就近取会取到昨天）
+        now_min = time.time() + 1800
+        while cand.timestamp() < now_min:
             cand += timedelta(days=1)
         return cand.timestamp()
 
