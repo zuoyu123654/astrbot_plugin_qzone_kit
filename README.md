@@ -197,7 +197,15 @@ AI 配置时先看一眼 `data/plugins/astrbot_plugin_private_companion/metadata
 | `dry_run` | false | 试运行：只判断、只记日志，不动真格 |
 | `test_force_post_once` | false | 【测试】下一轮无视判断，强制改签名 + 带图发一条（只生效一次） |
 
-## 说说的排版
+## 动图表情包（一闪一闪的问题）
+
+图包里的表情包有些是 **20ms/帧（50fps）、99 帧、3.9MB** 的，直接发到 QQ 空间手机上会降帧重编码，看起来一闪一闪。
+
+现在发之前会规整成：**≤40 帧 / 100ms 每帧（10fps）/ 最长边 360px / 128 色 / 透明铺白**，
+3.9MB 那种会变成 ~1MB。配置：`post_sticker_max_frames`、`post_sticker_frame_ms`、
+`post_sticker_max_px`、`post_sticker_colors`、`post_sticker_flatten`。
+
+## 说说的排版## 说说的排版
 
 她的说说会分成 **2~3 段**，不再是一大块：
 

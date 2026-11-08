@@ -154,6 +154,31 @@
     "description": "表情包里的 GIF 动图原样发出去（空间支持动图，动画会保住），不转静态、多大都不转（默认开）。关掉就退回以前的「一律转 JPEG」。",
     "default": true
   },
+  "post_sticker_max_frames": {
+    "type": "int",
+    "description": "动图最多保留几帧（默认 40）。帧太多手机上会一卡一卡地闪。",
+    "default": 40
+  },
+  "post_sticker_frame_ms": {
+    "type": "int",
+    "description": "每帧时长毫秒（默认 100 = 10fps）。原来 20ms 那种太快，手机播放会闪。",
+    "default": 100
+  },
+  "post_sticker_max_px": {
+    "type": "int",
+    "description": "动图最长边像素（默认 360）。太大 QQ 空间会重编码，也容易卡。",
+    "default": 360
+  },
+  "post_sticker_colors": {
+    "type": "int",
+    "description": "动图调色板颜色数（默认 128），越小文件越小。",
+    "default": 128
+  },
+  "post_sticker_flatten": {
+    "type": "bool",
+    "description": "把动图的透明背景铺成白色（默认开）。透明帧在手机上容易闪白。",
+    "default": true
+  },
   "post_sticker_prob": {
     "type": "float",
     "description": "上面那个开着时，多少比例的说说会带图（0~1，默认 0.75）。",

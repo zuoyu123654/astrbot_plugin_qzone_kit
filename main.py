@@ -44,7 +44,7 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, StarTools, register
 
 PLUGIN_NAME = "astrbot_plugin_qzone_kit"
-PLUGIN_VERSION = "0.10.3"
+PLUGIN_VERSION = "0.11.0"
 
 QZONE_PLUGIN = "astrbot_plugin_qzone"
 QQPROFILE_STATUS = "astrbot_plugin_qqprofile"
@@ -249,6 +249,24 @@ class QzoneKitPlugin(Star):
             self.boot_extra_max = 60.0
         # 动图表情包原样发（GIF 保动画，不转静态）
         self.sticker_keep_gif = bool(cfg.get("post_sticker_keep_gif", True))
+        # 动图规整：帧率太高/太大，手机上会一卡一卡地闪
+        try:
+            self.sticker_max_frames = max(4, int(cfg.get("post_sticker_max_frames", 40) or 40))
+        except (TypeError, ValueError):
+            self.sticker_max_frames = 40
+        try:
+            self.sticker_frame_ms = max(40, int(cfg.get("post_sticker_frame_ms", 100) or 100))
+        except (TypeError, ValueError):
+            self.sticker_frame_ms = 100
+        try:
+            self.sticker_max_px = max(120, int(cfg.get("post_sticker_max_px", 360) or 360))
+        except (TypeError, ValueError):
+            self.sticker_max_px = 360
+        self.sticker_flatten = bool(cfg.get("post_sticker_flatten", True))
+        try:
+            self.sticker_colors = max(32, min(256, int(cfg.get("post_sticker_colors", 128) or 128)))
+        except (TypeError, ValueError):
+            self.sticker_colors = 128
         # 可以调到几分钟，方便先试；正经用还是 45
         self.judge_minutes = max(1, int(cfg.get("judge_interval_minutes", 45) or 45))
         # 只在「有新聊天」时才判断；间隔随机浮动，别像闹钟
@@ -949,8 +967,60 @@ class QzoneKitPlugin(Star):
         """
 
         if src.suffix.lower() == ".gif" and self.sticker_keep_gif:
-            return str(src)
+            # 原样发会被 QQ 空间重编码：帧率太高（20ms/帧）就一卡一卡的
+            return self._normalize_gif(src)
         return self._to_jpeg(src)
+
+    def _normalize_gif(self, src: Path) -> str:
+        """把动图压到手机上能顺畅播的规格：限帧数、降帧率、缩尺寸、透明铺白。"""
+
+        try:
+            from PIL import Image
+
+            out = Path(self.data_dir) / "sticker_out.gif"
+            with Image.open(src) as im:
+                total = getattr(im, "n_frames", 1)
+                if total <= 1:
+                    return str(src)
+                step = max(1, (total + self.sticker_max_frames - 1) // self.sticker_max_frames)
+                frames = []
+                for i in range(0, total, step):
+                    im.seek(i)
+                    frame = im.convert("RGBA")
+                    if self.sticker_flatten:
+                        bg = Image.new("RGBA", frame.size, (255, 255, 255, 255))
+                        frame = Image.alpha_composite(bg, frame)
+                    frame = frame.convert("RGB")
+                    w, h = frame.size
+                    scale = min(1.0, self.sticker_max_px / max(w, h))
+                    if scale < 1.0:
+                        frame = frame.resize((max(1, int(w * scale)), max(1, int(h * scale))))
+                    frames.append(frame.convert("P", palette=Image.ADAPTIVE, colors=self.sticker_colors))
+                if not frames:
+                    return str(src)
+                frames[0].save(
+                    out,
+                    save_all=True,
+                    append_images=frames[1:],
+                    duration=self.sticker_frame_ms,
+                    loop=0,
+                    optimize=True,
+                    disposal=2,
+                )
+            before = src.stat().st_size / 1024
+            after = out.stat().st_size / 1024
+            logger.info(
+                "[QzoneKit] 动图规整：%d 帧 → %d 帧，%dms/帧，%.0fKB → %.0fKB",
+                total,
+                len(frames),
+                self.sticker_frame_ms,
+                before,
+                after,
+            )
+            return str(out)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[QzoneKit] 动图规整失败，用原图：%s（%s）", src, exc)
+            return str(src)
 
     def _to_jpeg(self, src: Path) -> str:
         if src.suffix.lower() in (".jpg", ".jpeg"):

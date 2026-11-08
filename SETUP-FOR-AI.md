@@ -339,6 +339,23 @@ async def download_file(source: str) -> bytes | None:
 
 ---
 
+## 7.4 动图表情包为什么一闪一闪（已修）
+
+原因不是压缩坏了，是**帧率太高 + 文件太大**：图包里那种表情包是 **20ms/帧（≈50fps）、99 帧、3.9MB**，
+手机上 QQ 空间会自己降帧、重编码，看起来就一卡一卡地闪。
+
+现在发之前会先规整：
+
+| 键 | 默认 | 说明 |
+| --- | --- | --- |
+| `post_sticker_max_frames` | 40 | 最多留几帧（99 → 33） |
+| `post_sticker_frame_ms` | 100 | 每帧 100ms = 10fps |
+| `post_sticker_max_px` | 360 | 最长边像素 |
+| `post_sticker_colors` | 128 | 调色板颜色数 |
+| `post_sticker_flatten` | true | 透明背景铺白，防闪白 |
+
+实测：3.9MB/99 帧 → **1.07MB / 33 帧 / 360px / 10fps**。想更小就把 `post_sticker_max_px` 调到 300。
+
 ## 7.5 说说排版（2~3 段）
 
 她的说说默认会**自动分成 2~3 段**，不会再是一大块：
