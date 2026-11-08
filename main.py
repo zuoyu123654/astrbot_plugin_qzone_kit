@@ -44,7 +44,7 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, StarTools, register
 
 PLUGIN_NAME = "astrbot_plugin_qzone_kit"
-PLUGIN_VERSION = "0.11.1"
+PLUGIN_VERSION = "0.11.2"
 
 QZONE_PLUGIN = "astrbot_plugin_qzone"
 QQPROFILE_STATUS = "astrbot_plugin_qqprofile"
@@ -1062,12 +1062,7 @@ class QzoneKitPlugin(Star):
         if not files:
             return ""
 
-        # 有动图优先动图（静态图手机上一闪一闪的毛病少，但动图才是表情包的灵魂）
-        if self.sticker_keep_gif:
-            gifs = [f for f in files if f.suffix.lower() == ".gif"]
-            if gifs:
-                files = gifs
-        picked = random.choice(files)
+        picked = random.choice(files)  # 全部随机，不刻意挑动图
         logger.info("[QzoneKit] 配图：%s", picked)
         return self._prepare_image(picked)
 
