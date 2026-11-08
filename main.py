@@ -44,7 +44,7 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, StarTools, register
 
 PLUGIN_NAME = "astrbot_plugin_qzone_kit"
-PLUGIN_VERSION = "0.9.8"
+PLUGIN_VERSION = "0.9.9"
 
 QZONE_PLUGIN = "astrbot_plugin_qzone"
 QQPROFILE_STATUS = "astrbot_plugin_qqprofile"
@@ -392,6 +392,14 @@ class QzoneKitPlugin(Star):
                 self.instant_guard_min,
                 self.instant_push_min,
             )
+        # 数据边界：一眼能看到「读了谁、写不写别人配置」
+        logger.info(
+            "[QzoneKit] 数据边界：只读其它插件状态=%s（文件名白名单，全量扫描=%s）｜"
+            "写回 QQ空间 配置=%s（daily_post_sync_qzone）",
+            self.read_plugin_state,
+            self.state_read_all_files,
+            self.sync_qzone_schedule,
+        )
         try:
             logger.info("[QzoneKit] 依赖检查：%s", "；".join(self._partner_report()))
         except Exception as exc:  # noqa: BLE001
