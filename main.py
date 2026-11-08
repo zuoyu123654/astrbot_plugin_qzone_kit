@@ -44,7 +44,7 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, StarTools, register
 
 PLUGIN_NAME = "astrbot_plugin_qzone_kit"
-PLUGIN_VERSION = "0.10.0"
+PLUGIN_VERSION = "0.10.1"
 
 QZONE_PLUGIN = "astrbot_plugin_qzone"
 QQPROFILE_STATUS = "astrbot_plugin_qqprofile"
@@ -62,10 +62,10 @@ CN_DAY_OFFSET = {
 # 发说说的排版要求：短句、分行，别写成一整块
 POST_STYLE = (
     "\n【排版要求（重要）】\n"
-    "· 分行写：每行一句、8~18 个字，2~5 行；一句只说一件事。\n"
-    "· 不要写成一整段长句，不要用长定语套长定语，句子读起来要能一口气念完。\n"
-    "· 用日常口语，别堆比喻、别用生僻词、别连用破折号和括号。\n"
-    "· 总长度控制在 60~140 字，最多不超过 180 字。"
+    "· 分成 2~3 段来写，段与段之间空一行；不要写成一整大段。\n"
+    "· 每段 1~3 句、30~80 字，一句只说一件事，句子要能一口气念完。\n"
+    "· 不要用长定语套长定语，别堆比喻、别用生僻词、别连用破折号和括号。\n"
+    "· 用日常口语，总长度 60~140 字，最多不超过 180 字。"
 )
 
 # 一次判断的提示词：让模型只回 JSON，别写别的
@@ -81,7 +81,7 @@ B. 要不要发一条 QQ 空间说说？
      对某件事的真实看法、不好意思直接讲的委屈或小心思 —— 这种恰恰是适合发空间的。
      写的时候用第一人称、克制一点，别点名骂人、别写成对谁的控诉。
    - 不值得：日常寒暄、重复的话题、没什么可说的。
-   - 给 1~3 句、60~160 字的正文，第一人称、口语、具体（提一下是什么事），不要像总结报告。\n   - **分行写**：每行一句、8~18 字，2~5 行；不要写成一整块长段落，别堆比喻和生僻词。
+   - 给 1~3 句、60~160 字的正文，第一人称、口语、具体（提一下是什么事），不要像总结报告。\n   - **分 2~3 段写**，每段 1~3 句、30~80 字；不要写成一整大段，别堆比喻和生僻词。
 
 【怎么把她现在的状态用上（很重要）】
 - 睡眠/精力差（比如「很晚了」「精神发飘」「困」）→ 只写短句、轻的，别长篇大论；太晚了宁可少发或干脆不发。
@@ -192,9 +192,13 @@ class QzoneKitPlugin(Star):
         # 发说说排版：分行、行宽、总长
         self.post_format = bool(cfg.get("post_format", True))
         try:
-            self.post_line_chars = max(6, int(cfg.get("post_line_chars", 26) or 26))
+            self.post_paragraphs = max(1, min(5, int(cfg.get("post_paragraphs", 3) or 3)))
         except (TypeError, ValueError):
-            self.post_line_chars = 26
+            self.post_paragraphs = 3
+        try:
+            self.post_paragraph_chars = max(20, int(cfg.get("post_paragraph_chars", 80) or 80))
+        except (TypeError, ValueError):
+            self.post_paragraph_chars = 80
         try:
             self.post_max_chars = max(40, int(cfg.get("post_max_chars", 180) or 180))
         except (TypeError, ValueError):
@@ -1616,7 +1620,7 @@ class QzoneKitPlugin(Star):
             "把下面几段「想发进 QQ 空间」的碎片合成**一条**说说：保留具体的事和她的语气，"
             "合并重复的意思，按时间或情绪顺序排好，100~200 字，第一人称口语，"
             "不要分点、不要标题、不要引号。只输出正文。\n"
-            "**分行写**：每行一句、8~18 字，2~5 行；别写成一整块长段落，别堆比喻和生僻词。\n"
+            "**分 2~3 段写**，每段 1~3 句、30~80 字；别写成一整大段，别堆比喻和生僻词。\n"
             "**这条是现在发的**，写的时候说法要和下面的【现在时间】对得上："
             "用什么称呼、天气亮不亮、是刚醒还是要睡了，都得跟这个时间一致；"
             "碎片里写的是别的时间点（比如半夜写的），就顺着改成现在这个说法，别硬搬。\n"
@@ -1634,7 +1638,7 @@ class QzoneKitPlugin(Star):
         return "\n".join(pieces)
 
     def _format_post(self, text: str) -> str:
-        """把模型写的一大段拆成好读的短行（保留原意，只调排版）。"""
+        """把模型写的一大段分成 2~3 段（只调段落，不改句子）。"""
 
         t = str(text or "").strip()
         if not t:
@@ -1644,46 +1648,63 @@ class QzoneKitPlugin(Star):
         t = re.sub(r"[ \t]+", " ", t)
         t = re.sub(r"\n{2,}", "\n", t).strip()
 
-        if not getattr(self, "post_format", True):
-            return t[: getattr(self, "post_max_chars", 200)]
-
         extra = getattr(self, "post_style_extra", "")
         if extra and extra not in t:
             t = t + "\n" + extra
 
-        # 先按句末标点切句，再按逗号切小句；最后按行宽贪心拼行
-        limit = getattr(self, "post_line_chars", 18)
-        clauses: list[str] = []
+        if not getattr(self, "post_format", True):
+            return t[: getattr(self, "post_max_chars", 180)]
+
+        want = getattr(self, "post_paragraphs", 3)
+        max_chars = getattr(self, "post_max_chars", 180)
+
+        # 模型已经分好段（有空行/换行）就尊重它，只做段数上限
+        blocks = [b.strip() for b in re.split(r"\n\s*\n|\n", t) if b.strip()]
+        if len(blocks) >= 2:
+            if len(blocks) > want:
+                head = blocks[: want - 1]
+                tail = "".join(blocks[want - 1 :])
+                blocks = head + [tail]
+            return "\n\n".join(blocks)[:max_chars].rstrip()
+
+        # 拆成句子（句末标点算在内）
+        sentences: list[str] = []
         for line in t.splitlines():
             line = line.strip()
             if not line:
                 continue
-            for sentence in re.split(r"(?<=[。！？!?；;])", line):
-                sentence = sentence.strip()
-                if not sentence:
-                    continue
-                for piece in re.findall(r"[^，,、\n]+[，,、]?", sentence):
-                    piece = piece.strip()
-                    if piece:
-                        clauses.append(piece)
+            for part in re.split(r"(?<=[。！？!?；;])", line):
+                part = part.strip()
+                if part:
+                    sentences.append(part)
+        if not sentences:
+            return t
 
-        lines: list[str] = []
-        cur = ""
-        for piece in clauses:
-            if not cur:
-                cur = piece
-            elif len(cur) + len(piece) <= limit:
-                cur += piece
-            else:
-                lines.append(cur)
-                cur = piece
+        per_para = getattr(self, "post_paragraph_chars", 80)
+
+        # 目标段数：不多于句子数，也不至于一段太长
+        total = sum(len(x) for x in sentences)
+        target = max(1, min(want, len(sentences), max(1, (total + per_para - 1) // per_para)))
+        target = max(1, min(target, 3))
+
+        # 按长度平均分给 target 段（段间不拆分单句，除非单句本身超长）
+        budget = max(1, total // target)
+        paras: list[list[str]] = []
+        cur: list[str] = []
+        cur_len = 0
+        for sentence in sentences:
+            if cur and (cur_len + len(sentence) > budget or len(cur) >= 3) and len(paras) < target - 1:
+                paras.append(cur)
+                cur = []
+                cur_len = 0
+            cur.append(sentence)
+            cur_len += len(sentence)
         if cur:
-            lines.append(cur)
-        # 去掉每行末尾的逗号/顿号，读起来干净
-        lines = [ln.rstrip("，,、 ") for ln in lines if ln.strip()]
+            paras.append(cur)
 
-        out = "\n".join(lines)
-        return out[: getattr(self, "post_max_chars", 200)].rstrip()
+        out_lines = ["".join(p).strip() for p in paras if "".join(p).strip()]
+        out = "\n\n".join(out_lines)
+        return out[:max_chars].rstrip()
 
     async def _apply_post(
         self,

@@ -54,11 +54,6 @@
     "description": "发说说前自动排版：把一大段拆成短行，一句一行。关掉就原样发。",
     "default": true
   },
-  "post_line_chars": {
-    "type": "int",
-    "description": "排版时每行最多几个字（默认 26）。20 太碎像诗，34 又像一段；26 左右是 5~7 行，最好读。",
-    "default": 26
-  },
   "post_max_chars": {
     "type": "int",
     "description": "说说总长度上限（字，默认 180），超出截断。",
@@ -223,5 +218,15 @@
     "type": "bool",
     "description": "默认关闭：只读已知状态文件（companions.json、*state*.json、*.sqlite3 等）。开启后会扫对方 plugin_data 里所有 json/db，可能读到敏感数据，非必要不要开。",
     "default": false
+  },
+  "post_paragraphs": {
+    "type": "int",
+    "description": "说说分成几段（默认 3，最多 5）。只要求「别写成一整大段」。",
+    "default": 3
+  },
+  "post_paragraph_chars": {
+    "type": "int",
+    "description": "每段大致多少字（默认 80），用来决定分成几段。",
+    "default": 80
   }
 }
