@@ -49,6 +49,26 @@
     "description": "平时说说的冷却上限（天，默认 3.6）。区间越大，抽到点时间时越容易避开每天总结。",
     "default": 3.6
   },
+  "post_format": {
+    "type": "bool",
+    "description": "发说说前自动排版：把一大段拆成短行，一句一行。关掉就原样发。",
+    "default": true
+  },
+  "post_line_chars": {
+    "type": "int",
+    "description": "排版时每行最多几个字（默认 26）。20 太碎像诗，34 又像一段；26 左右是 5~7 行，最好读。",
+    "default": 26
+  },
+  "post_max_chars": {
+    "type": "int",
+    "description": "说说总长度上限（字，默认 180），超出截断。",
+    "default": 180
+  },
+  "post_style_extra": {
+    "type": "string",
+    "description": "附加在说说末尾的固定一行（比如签名/小尾巴），留空就不加。",
+    "default": ""
+  },
   "post_critical_min_hours": {
     "type": "float",
     "description": "非常重要时的发说说冷却下限（小时，默认 22）。",

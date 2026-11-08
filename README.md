@@ -197,6 +197,15 @@ AI 配置时先看一眼 `data/plugins/astrbot_plugin_private_companion/metadata
 | `dry_run` | false | 试运行：只判断、只记日志，不动真格 |
 | `test_force_post_once` | false | 【测试】下一轮无视判断，强制改签名 + 带图发一条（只生效一次） |
 
+## 说说的排版
+
+她的说说不会是一大块了：
+
+- **生成阶段**就要求「一行一句、8~18 字、2~5 行、别堆比喻和生僻词」；
+- **发之前**再自动切一次行（按句号逗号切，再按行宽拼）；
+- 想调：`post_line_chars`（默认 26，20 太碎像诗、34 又像一段）、`post_max_chars`（默认 180）；
+- 想关：`post_format: false`。
+
 ## 状态文件
 
 `data/plugin_data/astrbot_plugin_qzone_kit/state.json`
