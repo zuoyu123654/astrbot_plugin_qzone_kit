@@ -201,7 +201,7 @@ AI 配置时先看一眼 `data/plugins/astrbot_plugin_private_companion/metadata
 
 她的说说会分成 **2~3 段**，不再是一大块：
 
-- **生成阶段**就要求「分 2~3 段，每段 30~150 字，段间换行不空行」；
+- **生成阶段**就要求「分 2~3 段，每段 30~150 字，段与段空一行」；
 - **发之前**如果还是一整块，就自动按句子分 2~3 段；她自己分好段的话保留原样；
 - 想调：`post_paragraphs`（默认 3）、`post_paragraph_chars`（默认 100，30~150）、`post_max_chars`（180）；
 - 想关：`post_format: false`。
