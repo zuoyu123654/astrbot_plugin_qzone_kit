@@ -44,7 +44,7 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, StarTools, register
 
 PLUGIN_NAME = "astrbot_plugin_qzone_kit"
-PLUGIN_VERSION = "0.11.0"
+PLUGIN_VERSION = "0.11.1"
 
 QZONE_PLUGIN = "astrbot_plugin_qzone"
 QQPROFILE_STATUS = "astrbot_plugin_qqprofile"
@@ -358,7 +358,7 @@ class QzoneKitPlugin(Star):
 
     # ── 生命周期 ──────────────────────────────────────────────────────────
     async def initialize(self) -> None:
-        # 每天 23 点那条总结是 QQ空间插件的 AutoPublish 在发；这个开关关掉就把它停了
+
         try:
             qz = self._star(QZONE_PLUGIN)
             publisher = getattr(qz, "auto_publish", None) if qz else None
@@ -1061,7 +1061,15 @@ class QzoneKitPlugin(Star):
             logger.info("[QzoneKit] 没有「%s」分类，从全部 %s 张里随机挑", cat or "（空）", len(files))
         if not files:
             return ""
-        return self._prepare_image(random.choice(files))
+
+        # 有动图优先动图（静态图手机上一闪一闪的毛病少，但动图才是表情包的灵魂）
+        if self.sticker_keep_gif:
+            gifs = [f for f in files if f.suffix.lower() == ".gif"]
+            if gifs:
+                files = gifs
+        picked = random.choice(files)
+        logger.info("[QzoneKit] 配图：%s", picked)
+        return self._prepare_image(picked)
 
     # ── 签名：冷却 + 待换队列（新的覆盖旧的） ─────────────────────────────
     def _sig_last_ts(self) -> float:
