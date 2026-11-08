@@ -44,7 +44,7 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, StarTools, register
 
 PLUGIN_NAME = "astrbot_plugin_qzone_kit"
-PLUGIN_VERSION = "0.10.1"
+PLUGIN_VERSION = "0.10.2"
 
 QZONE_PLUGIN = "astrbot_plugin_qzone"
 QQPROFILE_STATUS = "astrbot_plugin_qqprofile"
@@ -62,10 +62,10 @@ CN_DAY_OFFSET = {
 # 发说说的排版要求：短句、分行，别写成一整块
 POST_STYLE = (
     "\n【排版要求（重要）】\n"
-    "· 分成 2~3 段来写，段与段之间空一行；不要写成一整大段。\n"
-    "· 每段 1~3 句、30~80 字，一句只说一件事，句子要能一口气念完。\n"
-    "· 不要用长定语套长定语，别堆比喻、别用生僻词、别连用破折号和括号。\n"
-    "· 用日常口语，总长度 60~140 字，最多不超过 180 字。"
+    "· 分成 2~3 段来写；段与段之间直接换行就行，**不要空行**。\n"
+    "· 每段 30~150 字，不用限制几句；句子要能一口气念完。\n"
+    "· 不要写成一整大段，也不要用长定语套长定语，别堆比喻和生僻词。\n"
+    "· 用日常口语，总长度最多不超过 200 字。"
 )
 
 # 一次判断的提示词：让模型只回 JSON，别写别的
@@ -81,7 +81,7 @@ B. 要不要发一条 QQ 空间说说？
      对某件事的真实看法、不好意思直接讲的委屈或小心思 —— 这种恰恰是适合发空间的。
      写的时候用第一人称、克制一点，别点名骂人、别写成对谁的控诉。
    - 不值得：日常寒暄、重复的话题、没什么可说的。
-   - 给 1~3 句、60~160 字的正文，第一人称、口语、具体（提一下是什么事），不要像总结报告。\n   - **分 2~3 段写**，每段 1~3 句、30~80 字；不要写成一整大段，别堆比喻和生僻词。
+   - 给 1~3 句、60~160 字的正文，第一人称、口语、具体（提一下是什么事），不要像总结报告。\n   - **分 2~3 段写**，每段 30~150 字，段间换行不空行；不要写成一整大段，别堆比喻和生僻词。
 
 【怎么把她现在的状态用上（很重要）】
 - 睡眠/精力差（比如「很晚了」「精神发飘」「困」）→ 只写短句、轻的，别长篇大论；太晚了宁可少发或干脆不发。
@@ -196,9 +196,9 @@ class QzoneKitPlugin(Star):
         except (TypeError, ValueError):
             self.post_paragraphs = 3
         try:
-            self.post_paragraph_chars = max(20, int(cfg.get("post_paragraph_chars", 80) or 80))
+            self.post_paragraph_chars = max(20, int(cfg.get("post_paragraph_chars", 100) or 100))
         except (TypeError, ValueError):
-            self.post_paragraph_chars = 80
+            self.post_paragraph_chars = 100
         try:
             self.post_max_chars = max(40, int(cfg.get("post_max_chars", 180) or 180))
         except (TypeError, ValueError):
@@ -1620,7 +1620,7 @@ class QzoneKitPlugin(Star):
             "把下面几段「想发进 QQ 空间」的碎片合成**一条**说说：保留具体的事和她的语气，"
             "合并重复的意思，按时间或情绪顺序排好，100~200 字，第一人称口语，"
             "不要分点、不要标题、不要引号。只输出正文。\n"
-            "**分 2~3 段写**，每段 1~3 句、30~80 字；别写成一整大段，别堆比喻和生僻词。\n"
+            "**分 2~3 段写**，每段 30~150 字，段间换行不空行；别写成一整大段，别堆比喻和生僻词。\n"
             "**这条是现在发的**，写的时候说法要和下面的【现在时间】对得上："
             "用什么称呼、天气亮不亮、是刚醒还是要睡了，都得跟这个时间一致；"
             "碎片里写的是别的时间点（比如半夜写的），就顺着改成现在这个说法，别硬搬。\n"
@@ -1665,7 +1665,7 @@ class QzoneKitPlugin(Star):
                 head = blocks[: want - 1]
                 tail = "".join(blocks[want - 1 :])
                 blocks = head + [tail]
-            return "\n\n".join(blocks)[:max_chars].rstrip()
+            return "\n".join(blocks)[:max_chars].rstrip()
 
         # 拆成句子（句末标点算在内）
         sentences: list[str] = []
@@ -1680,7 +1680,7 @@ class QzoneKitPlugin(Star):
         if not sentences:
             return t
 
-        per_para = getattr(self, "post_paragraph_chars", 80)
+        per_para = getattr(self, "post_paragraph_chars", 100)
 
         # 目标段数：不多于句子数，也不至于一段太长
         total = sum(len(x) for x in sentences)
@@ -1693,7 +1693,7 @@ class QzoneKitPlugin(Star):
         cur: list[str] = []
         cur_len = 0
         for sentence in sentences:
-            if cur and (cur_len + len(sentence) > budget or len(cur) >= 3) and len(paras) < target - 1:
+            if cur and cur_len + len(sentence) > budget and len(paras) < target - 1:
                 paras.append(cur)
                 cur = []
                 cur_len = 0
@@ -1703,7 +1703,7 @@ class QzoneKitPlugin(Star):
             paras.append(cur)
 
         out_lines = ["".join(p).strip() for p in paras if "".join(p).strip()]
-        out = "\n\n".join(out_lines)
+        out = "\n".join(out_lines)
         return out[:max_chars].rstrip()
 
     async def _apply_post(
