@@ -43,8 +43,20 @@ from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, StarTools, register
 
+try:  # 自带 QQ 空间客户端 / QQ 状态表（同目录模块）
+    from .qq_status import STATUS_MAP, pick_status
+    from .selfqzone import SelfQzoneService
+except Exception:  # noqa: BLE001
+    from data.plugins.astrbot_plugin_qzone_kit.qq_status import (  # type: ignore
+        STATUS_MAP,
+        pick_status,
+    )
+    from data.plugins.astrbot_plugin_qzone_kit.selfqzone import (  # type: ignore
+        SelfQzoneService,
+    )
+
 PLUGIN_NAME = "astrbot_plugin_qzone_kit"
-PLUGIN_VERSION = "0.11.2"
+PLUGIN_VERSION = "0.12.0"
 
 QZONE_PLUGIN = "astrbot_plugin_qzone"
 QQPROFILE_STATUS = "astrbot_plugin_qqprofile"
@@ -160,7 +172,7 @@ def ts_to_day(ts: Any) -> date | None:
         return None
 
 
-@register(PLUGIN_NAME, "paopao", "空间小助手：删说说、改资料、自动改签名/发说说", PLUGIN_VERSION)
+@register(PLUGIN_NAME, "paopao", "空间小助手：发/删说说、改昵称签名、按心情改 QQ 状态（自带空间客户端）", PLUGIN_VERSION)
 class QzoneKitPlugin(Star):
     def __init__(self, context: Context, config: dict[str, Any] | None = None):
         super().__init__(context)
@@ -233,8 +245,9 @@ class QzoneKitPlugin(Star):
             self.max_age_days = max(0.0, float(cfg.get("post_max_age_days", 5)))
         except (TypeError, ValueError):
             self.max_age_days = 5.0
-        # 开机后先等一会儿再检查攒着的（默认 3 分钟 + 2~60 分钟随机），
-        # 免得看起来像「一开机就发」
+        # 跟随 AstrBot 启动：它一起来先等一会儿再检查攒着的（默认 3 分钟 + 2~60 分钟随机），
+        # 免得看起来像「AstrBot 一开就发」。
+        # 注意：键名还叫 post_boot_*，但计时起点是 AstrBot 启动，不是 Windows 开机。
         try:
             self.boot_wait_min = max(0.0, float(cfg.get("post_boot_wait_minutes", 3)))
         except (TypeError, ValueError):
@@ -277,6 +290,25 @@ class QzoneKitPlugin(Star):
             self.judge_jitter = 0.35
         # 试运行：只判断、只记日志，不真的改签名也不真的发说说
         self.dry_run = bool(cfg.get("dry_run", False))
+
+        # ── 自带 QQ 空间客户端（不依赖 astrbot_plugin_qzone）──────────
+        # 优先问协议端要 Cookie；拿不到就用这里填的（可选）
+        self.self_qzone_cookie = str(cfg.get("qzone_cookie", "") or "").strip()
+        try:
+            self.qzone_cookie_ttl = max(0, int(cfg.get("qzone_cookie_ttl_minutes", 30) or 30)) * 60
+        except (TypeError, ValueError):
+            self.qzone_cookie_ttl = 1800
+        self._self_service: Any | None = None
+
+        # ── QQ 在线状态：按心情自己改 ────────────────────────────────
+        self.auto_status_enabled = bool(cfg.get("auto_status_enabled", True))
+        try:
+            self.auto_status_minutes = max(10, int(cfg.get("auto_status_minutes", 90) or 90))
+        except (TypeError, ValueError):
+            self.auto_status_minutes = 90
+        self._last_status = ""  # 状态文件加载后再回填（见 _load_state 之后）
+        self._status_task: asyncio.Task | None = None
+        self._daily_task: asyncio.Task | None = None
         # 表情包（可选）：默认关，使用者同意才开；开了才会去读 meme_manager 的图包
         # 一次性测试开关：这一轮无论判断结果如何，都真发一条（只生效一次）
         self.force_post_once = bool(cfg.get("test_force_post_once", False))
@@ -326,6 +358,10 @@ class QzoneKitPlugin(Star):
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.state_file = self.data_dir / "state.json"
         self.state: dict[str, Any] = self._load_state()
+        # 上次设过的 QQ 状态（避免每轮都重复改）
+        self._last_status = str(
+            (self.state.get("qq_status") or {}).get("last") or ""
+        )
         # 每天总结几点的「上一次看到的值」，变了就重新打日志 / 对表
         self._daily_hm_seen: str | None = None
 
@@ -402,6 +438,24 @@ class QzoneKitPlugin(Star):
         if self.auto_signature or self.auto_post:
             self._task = asyncio.create_task(self._judge_loop())
         self._flush_task = asyncio.create_task(self._flush_loop())
+
+        # 没装 QQ空间插件（没有 AutoPublish）⇒ 自己按 daily_post_time 发总结
+        try:
+            meta = self.context.get_registered_star(QZONE_PLUGIN)
+            enabled = bool(getattr(meta, "activated", False)) if meta else False
+            qz = self._star(QZONE_PLUGIN) if enabled else None
+            publisher = getattr(qz, "auto_publish", None) if qz else None
+            has_publisher = publisher is not None and not getattr(publisher, "_terminated", False)
+        except Exception:  # noqa: BLE001
+            has_publisher = False
+        if self.daily_post and not has_publisher:
+            self._daily_task = asyncio.create_task(self._self_daily_loop())
+            logger.info("[QzoneKit] 每天总结改由自带客户端负责（没装 QQ空间插件）")
+
+        # 按心情自动改 QQ 状态
+        if self.auto_status_enabled:
+            self._status_task = asyncio.create_task(self._status_loop())
+            logger.info("[QzoneKit] 自动改 QQ 状态：开（约每 %s 分钟看一次心情）", self.auto_status_minutes)
         logger.info(
             "[QzoneKit] 已启动：自动签名=%s（平时 %g~%g 天 / 重要 %g~%g 小时）、"
             "自动说说=%s（平时 %g~%g 天 / 重要 %g~%g 小时）、判断间隔≈%s 分钟%s",
@@ -464,7 +518,7 @@ class QzoneKitPlugin(Star):
             )
 
     async def terminate(self) -> None:
-        for task in (self._task, self._flush_task):
+        for task in (self._task, self._flush_task, self._status_task, self._daily_task):
             if task and not task.done():
                 task.cancel()
 
@@ -475,6 +529,33 @@ class QzoneKitPlugin(Star):
             return getattr(meta, "star_cls", None) if meta else None
         except Exception:  # noqa: BLE001
             return None
+
+    def _service(self) -> Any | None:
+        """发/删/查说说用的服务：装了 QQ空间插件就用它，否则用自带客户端。"""
+
+        qz = self._star(QZONE_PLUGIN)
+        enabled = False
+        try:
+            meta = self.context.get_registered_star(QZONE_PLUGIN)
+            enabled = bool(getattr(meta, "activated", False)) if meta else False
+        except Exception:  # noqa: BLE001
+            enabled = False
+        service = getattr(qz, "service", None) if (qz and enabled) else None
+        if service is not None:
+            return service
+        if self._self_service is None:
+            try:
+                self._self_service = SelfQzoneService(
+                    self._call_api,
+                    timeout=30,
+                    cookie_ttl=self.qzone_cookie_ttl,
+                    cookie=self.self_qzone_cookie,
+                )
+                logger.info("[QzoneKit] 没装 QQ空间插件，改用自带客户端（发/删/查说说）")
+            except Exception as exc:  # noqa: BLE001
+                logger.error("[QzoneKit] 自带客户端初始化失败：%s", exc)
+                return None
+        return self._self_service
 
     async def _call_api(self, action: str, **kwargs: Any) -> Any:
         """调 OneBot 接口：优先用 QQ空间插件那个 client，其次平台实例，最后给个明白的错。"""
@@ -618,10 +699,9 @@ class QzoneKitPlugin(Star):
         if not self._is_owner(event):
             return "只有管理员能删说说"
 
-        qz = self._star(QZONE_PLUGIN)
-        service = getattr(qz, "service", None) if qz else None
+        service = self._service()
         if service is None:
-            return "删不了：没装/没启用「QQ空间」插件（astrbot_plugin_qzone）"
+            return "删不了：拿不到 QQ 空间客户端"
 
         day = parse_target_day(date_text)
         if date_text and day is None:
@@ -762,22 +842,90 @@ class QzoneKitPlugin(Star):
             return "只有管理员能让她发说说"
 
         qz = self._star(QZONE_PLUGIN)
-        if qz is None:
-            return "发不了：没装/没启用「QQ空间」插件（astrbot_plugin_qzone）"
+        publisher = getattr(qz, "auto_publish", None) if qz else None
 
-        publisher = getattr(qz, "auto_publish", None)
-        if publisher is None:
-            return "QQ空间插件没开自动发说说（AutoPublish），先去它的设置里把开关打开"
+        # 装了 QQ空间插件就照旧让它写（素材最全）
+        if publisher is not None:
+            try:
+                ok = await publisher.do_task()
+            except Exception as exc:  # noqa: BLE001
+                logger.error("[QzoneKit] 手动发总结失败：%s", exc)
+                return f"发失败了：{exc}"
+            if ok:
+                self._mark_post("manual")
+                return "发了，去空间看看"
+            return "没发出去（素材或接口出问题了，看日志）"
 
+        # 没装：用自带客户端 + 本插件攒的素材自己写一条
+        text = await self._compose_summary()
+        if not text:
+            return "没写成：模型没给正文（或者还没有素材）"
+        result = await self._apply_post(
+            text, "important", "每天总结（自带客户端）", self._guess_category(text), force=True
+        )
+        self._mark_post("manual")
+        return result
+
+    # ── 工具：QQ 资料与状态（并自 qqprofile）────────────────────────
+    @filter.llm_tool(name="qq_set_status")
+    async def qq_set_status(self, event: AstrMessageEvent, status_name: str) -> str:
+        """改机器人自己的 QQ 在线状态（就那种「摸鱼中/emo中/搬砖中」）。
+
+        使用者说「把状态改成…」「你现在是什么状态」想让你换一个时调用。
+
+        Args:
+            status_name(string): 必须是支持的状态名，比如：在线/Q我吧/离开/忙碌/请勿打扰/隐身/
+                听歌中/被掏空/我太难了/emo中/想静静/悠哉哉/搬砖中/摸鱼中/学习中/睡觉中/熬夜中/
+                元气满满/一言难尽/我没事/无聊中/追剧中
+        """
+
+        if not self._is_owner(event):
+            return "只有管理员能改状态"
+        if self.dry_run:
+            return f"[试运行] 本来要把状态改成【{status_name}】"
         try:
-            ok = await publisher.do_task()
+            return await self._set_qq_status(status_name)
         except Exception as exc:  # noqa: BLE001
-            logger.error("[QzoneKit] 手动发总结失败：%s", exc)
-            return f"发失败了：{exc}"
-        if ok:
-            self._mark_post("manual")
-            return "发了，去空间看看"
-        return "没发出去（素材或接口出问题了，看日志）"
+            return f"改状态失败：{exc}"
+
+    @filter.llm_tool(name="qq_set_nickname")
+    async def qq_set_nickname(self, event: AstrMessageEvent, nickname: str) -> str:
+        """改机器人自己的 QQ 昵称。
+
+        Args:
+            nickname(string): 新昵称
+        """
+
+        if not self._is_owner(event):
+            return "只有管理员能改昵称"
+        name = str(nickname or "").strip()
+        if not name:
+            return "没给新昵称"
+        try:
+            await self._call_api("set_qq_profile", nickname=name)
+        except Exception as exc:  # noqa: BLE001
+            return f"改昵称失败：{exc}"
+        return f"昵称已改成【{name}】"
+
+    @filter.llm_tool(name="qq_set_signature")
+    async def qq_set_signature(self, event: AstrMessageEvent, text: str) -> str:
+        """直接改机器人自己的 QQ 签名（立刻生效，不走冷却）。
+
+        Args:
+            text(string): 新签名（一句，别太长）
+        """
+
+        if not self._is_owner(event):
+            return "只有管理员能改签名"
+        sig = str(text or "").strip()
+        if not sig:
+            return "没给新签名"
+        try:
+            await self._call_api("set_self_longnick", longNick=sig)
+        except Exception as exc:  # noqa: BLE001
+            return f"改签名失败：{exc}"
+        self._mark_signature(sig, "manual")
+        return f"签名已改成：{sig}"
 
     # ── 工具 4：想改签名（受冷却管） ──────────────────────────────────────
     @filter.llm_tool(name="qq_signature_maybe_change")
@@ -1384,7 +1532,7 @@ class QzoneKitPlugin(Star):
             logger.warning("[QzoneKit] 写 QQ空间插件配置失败：%s", exc)
 
     def _sync_daily_time(self) -> None:
-        """开机、以及每轮检查时对一次表：时间变了，时间窗也就跟着变。"""
+        """AstrBot 启动、以及每轮检查时对一次表：时间变了，时间窗也就跟着变。"""
 
         hm_text = self._daily_hm_text()
         if getattr(self, "_daily_hm_seen", None) != hm_text:
@@ -1522,11 +1670,145 @@ class QzoneKitPlugin(Star):
         except Exception as exc:  # noqa: BLE001
             logger.warning("[QzoneKit][诊断] 整体失败：%r", exc)
 
+    @filter.llm_tool(name="qzone_selfcheck")
+    async def qzone_selfcheck(self, event: AstrMessageEvent) -> str:
+        """检查 QQ 空间客户端能不能用（只看不发，安全）。
+
+        使用者问「空间能用吗」「发说说怎么发不出去」时调用。
+        """
+
+        if not self._is_owner(event):
+            return "只有管理员能自检"
+
+        mode = "自带客户端"
+        try:
+            meta = self.context.get_registered_star(QZONE_PLUGIN)
+            if meta and getattr(meta, "activated", False):
+                mode = "QQ空间插件"
+        except Exception:  # noqa: BLE001
+            pass
+
+        try:
+            service = self._service()
+            if service is None:
+                return f"客户端={mode}｜拿不到客户端"
+            uin = await service.session.get_uin()
+            name = await service.session.get_nickname()
+        except Exception as exc:  # noqa: BLE001
+            return f"客户端={mode}｜不可用：{exc}"
+
+        extra = ""
+        if mode == "自带客户端" and not self.self_qzone_cookie:
+            extra = "（Cookie 是从协议端要的；要不到就填 qzone_cookie）"
+        return f"客户端={mode}｜uin={uin}｜昵称={name}{extra}"
+
+    # ── 自带总结 / QQ 资料 / QQ 状态 ────────────────────────────────
+    async def _compose_summary(self) -> str:
+        """用本插件自己的素材写一条「今天的总结」（没装 QQ空间插件时用）。"""
+
+        try:
+            material = await self._recent_block()
+            state = await self._state_block()
+            now_block = self._now_block()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[QzoneKit] 组装总结素材失败：%s", exc)
+            material, state, now_block = "", "", ""
+
+        prompt = (
+            "写一条今天的小结发到 QQ 空间：把今天发生的事、自己的感受串起来，"
+            "第一人称、日常口语，具体一点，别写成流水账。\n"
+            "分 2~3 段，每段 30~150 字，段与段之间空一行；别堆比喻和生僻词。\n"
+            "只输出正文，不要标题/引号/解释。\n\n"
+            f"【现在时间】{now_block}\n\n【她的状态】\n{state}\n\n【最近聊天素材】\n{material}"
+        )
+        try:
+            text = (await self._llm(prompt)).strip()
+        except Exception as exc:  # noqa: BLE001
+            logger.error("[QzoneKit] 写总结失败：%s", exc)
+            return ""
+        return text
+
+    async def _set_qq_status(self, status_name: str) -> str:
+        """按名字改 QQ 在线状态。"""
+
+        name = str(status_name or "").strip()
+        params = STATUS_MAP.get(name)
+        if not params:
+            return f"状态「{name}」不支持。可选：{'、'.join(list(STATUS_MAP)[:12])}…"
+        await self._call_api(
+            "set_online_status", status=params[0], ext_status=params[1], battery_status=0
+        )
+        self.state.setdefault("qq_status", {})["last"] = name
+        self._save_state()
+        self._last_status = name
+        logger.info("[QzoneKit] QQ 状态改成：%s", name)
+        return f"状态已改成【{name}】"
+
+    async def _auto_status_once(self) -> str | None:
+        """按她现在的心情挑一个状态，变了才改。"""
+
+        if not self.auto_status_enabled:
+            return None
+        try:
+            mood = await self._state_block()
+        except Exception:  # noqa: BLE001
+            mood = ""
+        name = pick_status(mood, datetime.now().hour)
+        if name == self._last_status:
+            return None
+        try:
+            await self._set_qq_status(name)
+            return name
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[QzoneKit] 自动改状态失败：%s", exc)
+            return None
+
+    async def _status_loop(self) -> None:
+        # 开机先等一会儿，别一启动就改
+        await asyncio.sleep(random.uniform(60, 180))
+        while True:
+            try:
+                await self._auto_status_once()
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[QzoneKit] 状态循环异常：%s", exc)
+            await asyncio.sleep(max(600, self.auto_status_minutes * 60))
+
+    async def _self_daily_loop(self) -> None:
+        """没装 QQ空间插件时，自己按 daily_post_time 发那条总结。"""
+
+        while True:
+            hm = self._parse_hm(self.daily_post_time)
+            if not hm:
+                await asyncio.sleep(3600)
+                continue
+            now = datetime.now()
+            target = now.replace(hour=hm[0], minute=hm[1], second=0, microsecond=0)
+            if target <= now:
+                target = target + timedelta(days=1)
+            wait = (target - now).total_seconds()
+            logger.info("[QzoneKit] 自带客户端：下次每天总结 %s（还有 %.1f 小时）", target.strftime("%H:%M"), wait / 3600)
+            await asyncio.sleep(max(60, wait))
+            if not self.daily_post:
+                continue
+            try:
+                text = await self._compose_summary()
+                if text:
+                    await self._apply_post(
+                        text,
+                        "important",
+                        "每天总结（自带客户端）",
+                        self._guess_category(text),
+                        force=True,
+                    )
+                    logger.info("[QzoneKit] 自带客户端：每天总结已发")
+            except Exception as exc:  # noqa: BLE001
+                logger.error("[QzoneKit] 自带客户端发总结失败：%s", exc)
+            await asyncio.sleep(120)
+
     async def _publish(self, text: str, images: list[str] | None = None) -> tuple[bool, str]:
-        qz = self._star(QZONE_PLUGIN)
-        service = getattr(qz, "service", None) if qz else None
+        service = self._service()
         if service is None:
-            return False, "没装/没启用「QQ空间」插件（astrbot_plugin_qzone）"
+            return False, "拿不到 QQ 空间客户端（既没装「QQ空间」插件，自带客户端也没起来）"
         try:
             if images:
                 # Post 模型只收字符串路径；盘符路径的坑已在 qzone/utils.py 里打了补丁
@@ -1926,13 +2208,13 @@ class QzoneKitPlugin(Star):
                         logger.warning("[QzoneKit] 发攒着的说说失败：%s", err)
 
     async def _flush_loop(self) -> None:
-        # 启动别急着发：CQHttp 客户端还没绑好时发会报「CQHttp 实例不存在」；
-        # 再加一段随机等待，免得每次开机都像掐着表发说说。
+        # 跟着 AstrBot 启动走：AstrBot 刚起来时 CQHttp 客户端可能还没绑好，发会报「CQHttp 实例不存在」；
+        # 再加一段随机等待，免得每次 AstrBot 启动都像掐着表发说说。
         wait = self.boot_wait_min * 60 + random.uniform(
             self.boot_extra_min * 60, self.boot_extra_max * 60
         )
         logger.info(
-            "[QzoneKit] 开机 %.0f 分钟后再检查攒着的说说（%s）",
+            "[QzoneKit] AstrBot 启动 %.0f 分钟后检查攒着的说说（%s）",
             wait / 60.0,
             self._fmt_ts(time.time() + wait),
         )

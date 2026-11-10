@@ -30,13 +30,18 @@ desc: >-
      碎片超过 5 天就不发了，要是全过期，那一次不发、按已发过处理，直接进下一轮冷却。
      补发时按现在的说法改口（昨天的内容说「昨晚」，不写「今天」）。
 
+  【不再需要别的插件】
+  发/删/查说说、改昵称/签名/头像这些，插件自带一套 QQ 空间客户端，
+  不装 astrbot_plugin_qzone 和 astrbot_plugin_qqprofile 也能用（装了会优先用它们）。
+  还加了「按心情自动改 QQ 状态」：疲惫→被掏空、困→睡觉中、闲→摸鱼中……
+
   【怎么用】
   装好两个前置后，把这句话发给你的 AI：
 
   「请帮我配置好 AstrBot 里的【空间小助手】插件，并验证是否可用。」
 
   AI 会按 SETUP-FOR-AI.md 配好参数、冷却、表情包，并验证发说说/改签名/删说说都能用。
-version: 0.11.2
+version: 0.12.0
 author: paopao
 repo: https://github.com/zuoyu123654/astrbot_plugin_qzone_kit
 astrbot_version: ">=4.17.0"

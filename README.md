@@ -205,6 +205,58 @@ AI 配置时先看一眼 `data/plugins/astrbot_plugin_private_companion/metadata
 3.9MB 那种会变成 ~1MB。配置：`post_sticker_max_frames`、`post_sticker_frame_ms`、
 `post_sticker_max_px`、`post_sticker_colors`、`post_sticker_flatten`。
 
+## 不用再装「QQ空间」「QQ资料管理」了
+
+发/删/查说说、改昵称/签名，插件里**自带一套 QQ 空间客户端**（`selfqzone/`），
+只装空间小助手就能用；要是你还装了那两个插件，会**优先用它们**（行为不变）。
+
+- Cookie：优先找协议端要（`get_cookies`）；要不到就在配置里填 `qzone_cookie`。
+- 每天 23:00 那条总结：没装 QQ空间插件时，由本插件自己写、自己发（按 `daily_post_time`）。
+- 自检：让她调 `qzone_selfcheck`，会报「客户端=自带客户端/QQ空间插件｜uin｜昵称」。
+
+## QQ 状态按心情自动改
+
+每隔 `auto_status_minutes`（默认 90 分钟）看一眼她的心情，变了才改：
+
+| 心情 / 状态 | 变成 |
+| --- | --- |
+| 困、睡、熬夜 | 睡觉中 |
+| 疲惫、累 | 被掏空 |
+| emo、难过、委屈 | emo中 |
+| 开心、兴奋 | 元气满满 |
+| 慌/发呆 | 想静静 |
+| 忙、干活 | 搬砖中 |
+| 闲、摸鱼 | 摸鱼中 |
+| 平稳、放松 | 悠哉哉 |
+
+关掉：`auto_status_enabled: false`。想手动改就让她调 `qq_set_status`。
+
+## 不用再装「QQ空间」「QQ资料管理」了
+
+发/删/查说说、改昵称/签名，插件里**自带一套 QQ 空间客户端**（`selfqzone/`），
+只装空间小助手就能用；要是你还装了那两个插件，会**优先用它们**（行为不变）。
+
+- Cookie：优先找协议端要（`get_cookies`）；要不到就在配置里填 `qzone_cookie`。
+- 每天 23:00 那条总结：没装 QQ空间插件时，由本插件自己写、自己发（按 `daily_post_time`）。
+- 自检：让她调 `qzone_selfcheck`，会报「客户端=自带客户端/QQ空间插件｜uin｜昵称」。
+
+## QQ 状态按心情自动改
+
+每隔 `auto_status_minutes`（默认 90 分钟）看一眼她的心情，变了才改：
+
+| 心情 / 状态 | 变成 |
+| --- | --- |
+| 困、睡、熬夜 | 睡觉中 |
+| 疲惫、累 | 被掏空 |
+| emo、难过、委屈 | emo中 |
+| 开心、兴奋 | 元气满满 |
+| 慌/发呆 | 想静静 |
+| 忙、干活 | 搬砖中 |
+| 闲、摸鱼 | 摸鱼中 |
+| 平稳、放松 | 悠哉哉 |
+
+关掉：`auto_status_enabled: false`。想手动改就让她调 `qq_set_status`。
+
 ## 说说的排版## 说说的排版
 
 她的说说会分成 **2~3 段**，不再是一大块：
