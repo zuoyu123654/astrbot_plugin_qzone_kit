@@ -56,7 +56,7 @@ except Exception:  # noqa: BLE001
     )
 
 PLUGIN_NAME = "astrbot_plugin_qzone_kit"
-PLUGIN_VERSION = "0.12.0"
+PLUGIN_VERSION = "0.12.1"
 
 QZONE_PLUGIN = "astrbot_plugin_qzone"
 QQPROFILE_STATUS = "astrbot_plugin_qqprofile"
@@ -440,17 +440,22 @@ class QzoneKitPlugin(Star):
         self._flush_task = asyncio.create_task(self._flush_loop())
 
         # 没装 QQ空间插件（没有 AutoPublish）⇒ 自己按 daily_post_time 发总结
+        # 自带客户端负责每天总结；如果 QQ空间插件还开着它的 AutoPublish，先停掉，别一天两条
         try:
             meta = self.context.get_registered_star(QZONE_PLUGIN)
             enabled = bool(getattr(meta, "activated", False)) if meta else False
             qz = self._star(QZONE_PLUGIN) if enabled else None
             publisher = getattr(qz, "auto_publish", None) if qz else None
-            has_publisher = publisher is not None and not getattr(publisher, "_terminated", False)
-        except Exception:  # noqa: BLE001
-            has_publisher = False
-        if self.daily_post and not has_publisher:
+            if publisher is not None and not getattr(publisher, "_terminated", False):
+                await publisher.terminate()
+                qz.auto_publish = None
+                logger.info("[QzoneKit] 已停用 QQ空间插件的每日总结，改由自带客户端发")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[QzoneKit] 停用 QQ空间插件 AutoPublish 时出错：%s", exc)
+
+        if self.daily_post:
             self._daily_task = asyncio.create_task(self._self_daily_loop())
-            logger.info("[QzoneKit] 每天总结改由自带客户端负责（没装 QQ空间插件）")
+            logger.info("[QzoneKit] 每天总结由自带客户端负责")
 
         # 按心情自动改 QQ 状态
         if self.auto_status_enabled:
@@ -533,16 +538,7 @@ class QzoneKitPlugin(Star):
     def _service(self) -> Any | None:
         """发/删/查说说用的服务：装了 QQ空间插件就用它，否则用自带客户端。"""
 
-        qz = self._star(QZONE_PLUGIN)
-        enabled = False
-        try:
-            meta = self.context.get_registered_star(QZONE_PLUGIN)
-            enabled = bool(getattr(meta, "activated", False)) if meta else False
-        except Exception:  # noqa: BLE001
-            enabled = False
-        service = getattr(qz, "service", None) if (qz and enabled) else None
-        if service is not None:
-            return service
+        # 默认用自带客户端，不再依赖 QQ空间插件
         if self._self_service is None:
             try:
                 self._self_service = SelfQzoneService(
@@ -551,11 +547,26 @@ class QzoneKitPlugin(Star):
                     cookie_ttl=self.qzone_cookie_ttl,
                     cookie=self.self_qzone_cookie,
                 )
-                logger.info("[QzoneKit] 没装 QQ空间插件，改用自带客户端（发/删/查说说）")
+                logger.info("[QzoneKit] 使用自带 QQ 空间客户端（发/删/查说说）")
             except Exception as exc:  # noqa: BLE001
                 logger.error("[QzoneKit] 自带客户端初始化失败：%s", exc)
-                return None
-        return self._self_service
+                self._self_service = None
+
+        if self._self_service is not None:
+            return self._self_service
+
+        # 自带客户端起不来时才兜底用插件（不是依赖，只是最后一条路）
+        try:
+            meta = self.context.get_registered_star(QZONE_PLUGIN)
+            enabled = bool(getattr(meta, "activated", False)) if meta else False
+            qz = self._star(QZONE_PLUGIN) if enabled else None
+            service = getattr(qz, "service", None) if qz else None
+            if service is not None:
+                logger.warning("[QzoneKit] 自带客户端不可用，临时改用 QQ空间插件的接口")
+                return service
+        except Exception:  # noqa: BLE001
+            pass
+        return None
 
     async def _call_api(self, action: str, **kwargs: Any) -> Any:
         """调 OneBot 接口：优先用 QQ空间插件那个 client，其次平台实例，最后给个明白的错。"""

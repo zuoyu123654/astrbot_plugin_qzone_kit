@@ -375,10 +375,11 @@ async def download_file(source: str) -> bytes | None:
 
 ## 7.6 自带客户端 & QQ 状态（0.12.0 起）
 
-- **不需要** `astrbot_plugin_qzone` / `astrbot_plugin_qqprofile` 了：发/删/查说说、改昵称/签名都由本插件自带。
-  装了那两个插件会自动优先用它们，所以升级是平滑的。
+- **不再依赖** `astrbot_plugin_qzone` / `astrbot_plugin_qqprofile`：发/删/查说说、改昵称/签名都走自带客户端，
+  **默认就是自带**；那两个插件可以直接卸载。只有自带客户端初始化失败时才临时兜底用它们。
 - Cookie：默认问协议端 `get_cookies`；协议端不支持时，让使用者从浏览器复制 Cookie 填进 `qzone_cookie`。
-- 每天总结：没有 QQ空间插件时，插件按 `daily_post_time` 自己写自己发（日志里能看到「自带客户端：下次每天总结 23:00」）。
+- 每天总结：由自带客户端按 `daily_post_time` 自己写自己发（日志里能看到「自带客户端：下次每天总结 23:00」）；
+  如果 QQ空间插件还开着 AutoPublish，启动时会先把它停掉，避免一天两条。
 - QQ 状态：`auto_status_enabled`（默认开）+ `auto_status_minutes`（默认 90）；
   按心情映射（困→睡觉中、疲惫→被掏空、emo→emo中、开心→元气满满…），状态没变不改。
 - 验收：
