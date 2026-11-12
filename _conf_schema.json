@@ -246,8 +246,23 @@
   },
   "judge_only_on_new": {
     "type": "bool",
-    "description": "（默认关）只在有新聊天时判断。判断还兼着改签名等效果，所以平时建议关着。",
+    "description": "（默认关）只在有新聊天时判断。判断还兼着改签名等效果，所以平时建议关着。开启后要攒够下面两个条数门槛才会真的叫模型。",
     "default": false
+  },
+  "judge_group_min_messages": {
+    "type": "int",
+    "description": "群聊攒够多少条才判断（默认 30）。只在 judge_only_on_new 打开时生效。群消息碎，别设得太高，不然一天都等不到一次。",
+    "default": 30
+  },
+  "judge_private_min_messages": {
+    "type": "int",
+    "description": "私聊攒够多少条才判断（默认 10）。只在 judge_only_on_new 打开时生效。",
+    "default": 10
+  },
+  "judge_fallback_hours": {
+    "type": "float",
+    "description": "时间兜底（默认 8 小时）：条数一直攒不够时，超过这么久没判断、期间又确实有新消息，就放行判断一次。0 表示不兜底。签名到期、说说拖太久会无视条数直接强制判断，不受这个值影响。",
+    "default": 8
   },
   "judge_interval_jitter": {
     "type": "float",
