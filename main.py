@@ -56,7 +56,7 @@ except Exception:  # noqa: BLE001
     )
 
 PLUGIN_NAME = "astrbot_plugin_qzone_kit"
-PLUGIN_VERSION = "0.12.1"
+PLUGIN_VERSION = "0.13.0"
 
 QZONE_PLUGIN = "astrbot_plugin_qzone"
 QQPROFILE_STATUS = "astrbot_plugin_qqprofile"
@@ -284,6 +284,20 @@ class QzoneKitPlugin(Star):
         self.judge_minutes = max(1, int(cfg.get("judge_interval_minutes", 45) or 45))
         # 只在「有新聊天」时才判断；间隔随机浮动，别像闹钟
         self.judge_only_on_new = bool(cfg.get("judge_only_on_new", False))
+        # 攒够条数才判断：群聊一条消息的分量比私聊轻，但门槛仍要够，不然一直在小额烧钱
+        try:
+            self.judge_group_min_messages = max(1, int(cfg.get("judge_group_min_messages", 30) or 30))
+        except (TypeError, ValueError):
+            self.judge_group_min_messages = 30
+        try:
+            self.judge_private_min_messages = max(1, int(cfg.get("judge_private_min_messages", 10) or 10))
+        except (TypeError, ValueError):
+            self.judge_private_min_messages = 10
+        # 条数一直攒不够时的时间兜底：超过这么久没判断、期间有过新消息，就放行一次
+        try:
+            self.judge_fallback_hours = max(0.0, float(cfg.get("judge_fallback_hours", 8) or 0))
+        except (TypeError, ValueError):
+            self.judge_fallback_hours = 8.0
         try:
             self.judge_jitter = max(0.0, min(0.8, float(cfg.get("judge_interval_jitter", 0.35))))
         except (TypeError, ValueError):
@@ -2253,9 +2267,18 @@ class QzoneKitPlugin(Star):
                     return
             except Exception:  # noqa: BLE001
                 pass
-            self.state["last_umo"] = str(event.unified_msg_origin or "")
+            umo = str(event.unified_msg_origin or "")
+            self.state["last_umo"] = umo
             recent = self.state.setdefault("recent", [])
-            recent.append({"at": int(time.time()), "who": sender[-4:], "text": text[:200]})
+            recent.append(
+                {
+                    "at": int(time.time()),
+                    "who": sender[-4:],
+                    "text": text[:200],
+                    # 1=群聊 0=私聊；老的记录没这个字段，按群聊算（门槛更高，宁可少判断）
+                    "g": 1 if "GroupMessage" in umo else 0,
+                }
+            )
             del recent[: -self.recent_max]
             self._save_state()
         except Exception:  # noqa: BLE001
@@ -3007,21 +3030,90 @@ class QzoneKitPlugin(Star):
             return None
 
     def _has_new_chat(self) -> bool:
-        """上次判断之后有没有新的聊天；没有就不用叫模型。"""
+        """上次判断之后攒够条数才叫模型：群聊看群聊门槛，私聊看私聊门槛。"""
 
         recent = self.state.get("recent") or []
         if not recent:
             return False
-        last = float(self.state.get("last_judge") or 0)
-        latest = max(float(item.get("at") or 0) for item in recent[-10:])
-        return latest > last
+        try:
+            last = float(self.state.get("last_judge") or 0)
+        except (TypeError, ValueError):
+            last = 0.0
+        group_min = max(1, int(getattr(self, "judge_group_min_messages", 30) or 30))
+        private_min = max(1, int(getattr(self, "judge_private_min_messages", 10) or 10))
+        group_new = 0
+        private_new = 0
+        for item in recent:
+            try:
+                at = float(item.get("at") or 0)
+            except (TypeError, ValueError):
+                continue
+            if at <= last:
+                continue
+            if int(item.get("g", 1) or 0):
+                group_new += 1
+            else:
+                private_new += 1
+            if group_new >= group_min or private_new >= private_min:
+                return True
+        return False
+
+    def _has_any_new_message(self) -> bool:
+        """上次判断之后有没有任何一条新消息（时间兜底时用）。"""
+
+        recent = self.state.get("recent") or []
+        try:
+            last = float(self.state.get("last_judge") or 0)
+        except (TypeError, ValueError):
+            last = 0.0
+        for item in recent:
+            try:
+                if float(item.get("at") or 0) > last:
+                    return True
+            except (TypeError, ValueError):
+                continue
+        return False
+
+    def _judge_forced_reason(self) -> str:
+        """条数不够也必须判断一次的理由；返回空串表示这轮可以跳过。"""
+
+        now = time.time()
+        # 1) 签名已经拖过临界点：换签名不该被「群里没人说话」卡住
+        if self.auto_signature:
+            sig = self.state.get("signature") or {}
+            try:
+                sig_last = float(sig.get("last_at") or 0)
+            except (TypeError, ValueError):
+                sig_last = 0.0
+            if sig_last and now - sig_last >= max(1.0, self.sig_crit_max_h) * 3600:
+                return "签名到期"
+        # 2) 说说拖过保底天数（或者根本还没发过）：该写一条了
+        if self.auto_post:
+            post_last = self._post_last_ts()
+            if not post_last or now - post_last >= max(0.0, self.post_fallback_days) * 86400:
+                return "说说拖太久"
+        # 3) 太久没判断了，只要期间有过新消息就放行一次
+        fallback_hours = float(getattr(self, "judge_fallback_hours", 8) or 0)
+        if fallback_hours > 0:
+            try:
+                last_judge = float(self.state.get("last_judge") or 0)
+            except (TypeError, ValueError):
+                last_judge = 0.0
+            if (not last_judge or now - last_judge >= fallback_hours * 3600) and (
+                self._has_any_new_message()
+            ):
+                return "太久没判断"
+        return ""
 
     async def _judge_once(self) -> None:
         if self._busy:
             return
         if self.judge_only_on_new and not self._has_new_chat():
-            logger.debug("[QzoneKit] 没有新聊天，这轮不判断")
-            return
+            forced = self._judge_forced_reason()
+            if not forced:
+                logger.debug("[QzoneKit] 没攒够条数，这轮不判断")
+                return
+            logger.info("[QzoneKit] 条数不够但%s，强制判断一次", forced)
         self._busy = True
         try:
             sig = self.state.get("signature", {})
