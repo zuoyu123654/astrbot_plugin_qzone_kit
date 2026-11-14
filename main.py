@@ -64,7 +64,7 @@ except Exception:  # noqa: BLE001
     )
 
 PLUGIN_NAME = "astrbot_plugin_qzone_kit"
-PLUGIN_VERSION = "0.14.1"
+PLUGIN_VERSION = "0.14.2"
 
 QZONE_PLUGIN = "astrbot_plugin_qzone"
 QQPROFILE_STATUS = "astrbot_plugin_qqprofile"
@@ -1420,6 +1420,46 @@ class QzoneKitPlugin(Star):
             return None, "「豆包画画」插件版本太老（没有出图方法），升级一下再用"
         return star, ""
 
+    def _pick_ref_for(self, star: Any, desc: str) -> str:
+        """按画面描述挑一张「合适」的角色参考图。
+
+        顺序：描述里提到「成熟/长大/御姐」⇒ 挑对应的那张；提到参考图名字 ⇒ 用那张；
+        提到「Q版/女仆装/可爱/默认」⇒ 默认那张；都没有 ⇒ 交给豆包插件自己挑（回落到默认）。
+        """
+
+        names: list[tuple[str, str]] = []
+        files_of = getattr(star, "_ref_files", None)
+        if callable(files_of):
+            try:
+                for p in files_of():
+                    names.append((Path(p).stem, str(p)))
+            except Exception:  # noqa: BLE001
+                names = []
+
+        for hint in ("成熟", "长大", "御姐", "成年", "大只"):
+            if hint in desc:
+                for stem, path in names:
+                    if hint in stem or (hint == "御姐" and "成熟" in stem):
+                        return path
+        # 描述里直接说了参考图的名字（用括号前的主名去比，别要求用户写出整个文件名）
+        for stem, path in names:
+            base = re.split(r"[（(]", stem)[0].strip()
+            if base and base in desc:
+                return path
+        for hint in ("默认", "Q版", "女仆装", "可爱"):
+            if hint in desc:
+                for stem, path in names:
+                    if hint in stem or "默认" in stem:
+                        return path
+
+        picker = getattr(star, "_pick_ref", None)
+        if callable(picker):
+            try:
+                return str(picker("", desc) or "")
+            except Exception:  # noqa: BLE001
+                return ""
+        return names[0][1] if names else ""
+
     async def _ai_paint(
         self, desc: str, self_portrait: bool = False
     ) -> tuple[str, str]:
@@ -1453,13 +1493,7 @@ class QzoneKitPlugin(Star):
         refs: list[str] = []
         body = desc
         if is_self:
-            ref = ""
-            pick = getattr(star, "_pick_ref", None)
-            if callable(pick):
-                try:
-                    ref = str(pick("", desc) or "")
-                except Exception:  # noqa: BLE001
-                    ref = ""
+            ref = self._pick_ref_for(star, desc)
             if ref and Path(ref).is_file():
                 refs = [ref]
             appear = getattr(star, "_self_appearance_text", None)

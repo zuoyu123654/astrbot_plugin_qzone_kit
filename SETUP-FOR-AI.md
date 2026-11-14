@@ -496,8 +496,9 @@ async def download_file(source: str) -> bytes | None:
 
 命中后：
 
-- `star._pick_ref("", desc)` 从 `plugin_data/astrbot_plugin_doubao_paint/refs/` 里挑——
-  描述里提到文件名（如「成熟」）就挑那张，否则回落到 `默认（Q版可爱 女仆装）.png`；
+- `_pick_ref_for()` 按描述挑一张「合适」的：
+  说「成熟/长大/御姐」⇒ `成熟（长大）.jpg`；说「Q版/女仆装/可爱/默认」或提到图名 ⇒ 默认那张；
+  什么都没说 ⇒ 回落到默认（`默认（Q版可爱 女仆装）.png`）。
 - 把挑到的图作为 `ref_images` 传给 `_generate()`，豆包会把它当参考图画；
 - 提示词再追加 `star._self_appearance_text(有无参考图)`（蓝渐变长发、鲸鳍耳、鲸尾、白饭碗那套）。
 - 画风景/物品时**不塞**人物参考图（否则豆包可能硬塞一个角色进去）。

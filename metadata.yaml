@@ -58,10 +58,12 @@ desc: >-
       JPEG 再上传。冷却里攒着的那条，到点发车前才画。
       画的是她自己（0.14.1）：会自动从豆包画画的角色参考图里挑一张当参考、再补一句锁形象说明，
       画出来就是她的样子，不会变成别人；画风景/东西时不塞人物参考图。
+      挑哪张看描述（0.14.2）：说「成熟/长大/御姐」就挑成熟那张，说「Q版/女仆装/可爱」
+      或提到图名就用那张，都没说默认 Q 版。
       和表情包二选一：说了要现画就不配表情包，现画失败才退回表情包。
       配置项：post_ai_image_enabled（默认开）、post_ai_image_prob（自动发时 70% 才真画）、
       post_ai_image_timeout_seconds（默认 200 秒）。
-version: 0.14.1
+version: 0.14.2
 author: paopao
 repo: https://github.com/zuoyu123654/astrbot_plugin_qzone_kit
 astrbot_version: ">=4.17.0"
