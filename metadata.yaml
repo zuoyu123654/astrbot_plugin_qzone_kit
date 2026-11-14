@@ -45,7 +45,12 @@ desc: >-
   「请帮我配置好 AstrBot 里的【空间小助手】插件，并验证是否可用。」
 
   AI 会按 SETUP-FOR-AI.md 配好参数、冷却、表情包，并验证发说说/改签名/删说说都能用。
-version: 0.13.1
+
+  11. 隐私护栏（0.13.2 起）：说说里不许出现别人的信息。提示词里是硬红线（群聊原话只作
+      判断心情的参考，一句都不许写进正文）；发出去之前还会再查一遍 —— 正文里出现群成员的
+      QQ 尾号、或者有连续 8 个字和某条群聊原话重合，这条就不发。系统消息也不再混进判断素材。
+      配置项 qzone_privacy_guard，默认开，不建议关。
+version: 0.13.2
 author: paopao
 repo: https://github.com/zuoyu123654/astrbot_plugin_qzone_kit
 astrbot_version: ">=4.17.0"
