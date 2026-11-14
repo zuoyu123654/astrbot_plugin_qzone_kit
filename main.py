@@ -124,8 +124,8 @@ B. 要不要发一条 QQ 空间说说？
    - 给 1~3 句、60~160 字的正文，第一人称、口语、具体（提一下是什么事），不要像总结报告。\n   - **分 2~3 段写**，每段 30~150 字，段与段之间空一行；不要写成一整大段，别堆比喻和生僻词。
 
 【隐私红线（这条最重要，违反就整条作废）】
-- 下面【最近聊天】里**大部分是群里别人说的话**。那只是给你判断她心情用的参考素材，
-  **一句都不许写进说说**。
+- 下面【最近聊天】默认只放**老大自己和他私聊**的内容；如果里面出现了群里别人说的话，
+  那只是给你判断她心情用的参考，**一句都不许写进说说**。
 - 说说里不许出现任何人的 QQ 号或尾号、昵称、群名、@某某。
 - 不许复述，也不许改写别人的原话。要提只能写成没有指向的概括，
   比如「今天群里聊到个有意思的事」，**不能写具体内容**。
@@ -378,6 +378,10 @@ class QzoneKitPlugin(Star):
         self.judge_minutes = max(1, int(cfg.get("judge_interval_minutes", 45) or 45))
         # 只在「有新聊天」时才判断；间隔随机浮动，别像闹钟
         self.judge_only_on_new = bool(cfg.get("judge_only_on_new", False))
+        # 群聊里是别人说的话。喂进说说判断，她就会把群友的话安到老大头上
+        # （实测：群里有人骂「马化腾想钱想疯了」，她写说说时当成了老大的事）。
+        # 默认只喂私聊；想让她参考群里的气氛再把这项打开。
+        self.judge_include_group = bool(cfg.get("judge_include_group_messages", False))
         # 攒够条数才判断：群聊一条消息的分量比私聊轻，但门槛仍要够，不然一直在小额烧钱
         try:
             self.judge_group_min_messages = max(1, int(cfg.get("judge_group_min_messages", 30) or 30))
@@ -3704,6 +3708,9 @@ class QzoneKitPlugin(Star):
 
     async def _recent_block(self) -> str:
         recent = self.state.get("recent") or []
+        # 群聊是别人说的，不能当成「老大最近聊了什么」写进说说。
+        if not getattr(self, "judge_include_group", False):
+            recent = [x for x in recent if int(x.get("g") or 0) == 0]
         if not recent:
             return "（最近没有聊天）"
         lines = []
