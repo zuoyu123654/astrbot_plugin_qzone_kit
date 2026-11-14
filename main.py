@@ -2449,10 +2449,18 @@ class QzoneKitPlugin(Star):
                 )
             batch = await self._select_fragments(
                 self._fresh_fragments(pending)
-                + [{"text": text, "importance": importance, "at": now}]
+                + [
+                    {
+                        "text": text,
+                        "importance": importance,
+                        "at": now,
+                        "illustration": illustration,
+                    }
+                ]
             )
             body = await self._merge_fragments(batch)
-            desc = illustration
+            # 这条自己说了要配图就用它的；没说就看看攒着的那批里有没有人想配
+            desc = self._frag_illustration(batch)
             if desc and not self.ai_image_enabled:
                 logger.info("[QzoneKit] 现画配图开关关着，这条改配表情包/纯文字")
                 desc = ""
