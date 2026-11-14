@@ -63,7 +63,13 @@ desc: >-
       和表情包二选一：说了要现画就不配表情包，现画失败才退回表情包。
       配置项：post_ai_image_enabled（默认开）、post_ai_image_prob（自动发时 70% 才真画）、
       post_ai_image_timeout_seconds（默认 200 秒）。
-version: 0.14.2
+
+  13. 老大叫她发就一定发（0.14.3）：模型有时会把「老大让我发」走到「她自己想发」那个工具上，
+      那条看冷却，于是她回「冷却还有 57 小时」。现在两道保险：
+      ① 两个工具的说明写清楚（老大点名 → qzone_post_on_demand，立即发、无视冷却）；
+      ② 就算走错工具，只要老大这条消息里说了「发说说/发个周记/现在就发」这类，
+         插件也会自动无视冷却直接发；攒着的回话里还会提示模型该换哪个工具。
+version: 0.14.3
 author: paopao
 repo: https://github.com/zuoyu123654/astrbot_plugin_qzone_kit
 astrbot_version: ">=4.17.0"

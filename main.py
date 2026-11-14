@@ -64,7 +64,7 @@ except Exception:  # noqa: BLE001
     )
 
 PLUGIN_NAME = "astrbot_plugin_qzone_kit"
-PLUGIN_VERSION = "0.14.2"
+PLUGIN_VERSION = "0.14.3"
 
 QZONE_PLUGIN = "astrbot_plugin_qzone"
 QQPROFILE_STATUS = "astrbot_plugin_qqprofile"
@@ -1152,13 +1152,15 @@ class QzoneKitPlugin(Star):
         illustration: str = "",
         self_portrait: bool = False,
     ) -> str:
-        """老大点名让她发某类 QQ 空间说说时调用（立即发，不受冷却限制）。
+        """老大点名让她发说说时调用（立即发，**完全无视冷却**，也会把攒着的一起发掉）。
 
-        适用：「发个周记」「发一条最近聊天的说说」「记录一下最近刷到的视频」「发条日记」「发一条最近状态/心情」。
+        适用：「发条说说」「发个说说」「发个周记」「发一条最近聊天的说说」
+        「记录一下最近刷到的视频」「发条日记」「发一条最近状态/心情」「现在就发」。
+        → 老大叫她发**一律用这个**，不要用 `qzone_mood_post`（那个会按冷却攒着，她要等几十小时）。
 
         Args:
-            kind(string): weekly 周记 / chat 最近聊天 / video 刷到的视频 / diary 日记 / mood 最近状况与心情 / auto；也可填原话
-            extra(string): 补充要求，没有就留空
+            kind(string): weekly 周记 / chat 最近聊天 / video 刷到的视频 / diary 日记 / mood 最近状况与心情 / auto；也可填原话；不确定就留空（按 auto）
+            extra(string): 补充要求（比如老大指定了内容方向），没有就留空
             illustration(string): 想给这条说说**现画一张配图**时填画面描述（用你自己的话写，
                 40~120 字）。填了会让本机豆包画一张，画好（约一分钟）再带图发。留空 = 不画。
             self_portrait(bool): 画的是你自己（你的样子/你在做什么）就设 true，会带角色参考图。
@@ -1204,6 +1206,27 @@ class QzoneKitPlugin(Star):
         logger.info("[QzoneKit] 按需发说说（%s）：%s", k, body[:40])
         return f"{result}｜类型={k}"
 
+    # 老大明确让她发说说的说法（命中就无视冷却，立即发）
+    POST_ASK_HINTS = (
+        "发说说", "发条说说", "发个说说", "发一条说说", "发一条", "发个动态", "发条动态",
+        "发动态", "发空间", "发个空间", "发条空间", "去空间发", "发周记", "发条周记",
+        "发日记", "发条日记", "发心情", "发条心情", "现在发", "现在就发", "立刻发",
+        "马上发", "赶紧发", "这就发", "帮我发", "给我发", "替我发", "发出去", "发一下",
+    )
+    POST_ASK_NO = (
+        "别发", "不要发", "不用发", "先别发", "别急着发", "不发了", "别乱发", "别帮我发",
+    )
+
+    def _owner_asked_to_post(self, event: AstrMessageEvent) -> bool:
+        """老大在消息里明确让她发说说？（命中的话就算他说了，无视冷却）"""
+
+        text = str(getattr(event, "message_str", "") or "").strip()
+        if not text:
+            return False
+        if any(no in text for no in self.POST_ASK_NO):
+            return False
+        return any(hint in text for hint in self.POST_ASK_HINTS)
+
     @filter.llm_tool(name="qzone_mood_post")
     async def qzone_mood_post(
         self,
@@ -1215,8 +1238,11 @@ class QzoneKitPlugin(Star):
         illustration: str = "",
         self_portrait: bool = False,
     ) -> str:
-        """她「想发一条说说」时调用：发泄、被安慰到、遇到新鲜事/重要事、想记录、
+        """**她自己想发**一条说说时调用：发泄、被安慰到、遇到新鲜事/重要事、想记录、
         想找人说说话、有感触——这些时候可以发。日常寒暄不要发。
+
+        ⚠️ **老大叫她发**（「发条说说」「发个周记」「现在就发」这类）**不要用这个工具**，
+        用 `qzone_post_on_demand`（那个直接发、不看冷却）。这里会按冷却攒着，她要等几十小时。
 
         插件按冷却决定：现在就发 / 先攒着，等冷却好了合成一条发；
         非常重要（critical）可以把冷却缩到 24 小时。攒着的时候如果又来新的，
@@ -1241,11 +1267,19 @@ class QzoneKitPlugin(Star):
         text = (content or "").strip()
         if not text:
             return "没给内容"
+        # 保险丝：就算模型走错工具，只要老大这条消息里明说了「发说说」之类，也直接发
+        forced = self._owner_asked_to_post(event)
+        if forced:
+            logger.info(
+                "[QzoneKit] 老大在消息里明说要发（%s）→ 无视冷却，立即发，不再攒",
+                str(getattr(event, "message_str", ""))[:30],
+            )
         return await self._apply_post(
             text,
             importance,
             reason or "自己想的",
             (sticker or "").strip(),
+            force=forced,
             illustration=(illustration or "").strip(),
             umo=str(getattr(event, "unified_msg_origin", "") or ""),
             self_portrait=bool(self_portrait),
@@ -2570,7 +2604,8 @@ class QzoneKitPlugin(Star):
                 )
                 return (
                     f"先不发：现在正贴着{self._daily_hm_text()}那条每天总结，怕挤一起。"
-                    f"挪到 {self._fmt_ts(due)} 再发，先攒着（现在 {len(pending)} 段）。"
+                    f"挪到 {self._fmt_ts(due)} 再发，先攒着（现在 {len(pending)} 段）。\n"
+                    "【提示】如果是老大点名要现在发，改用 qzone_post_on_demand，那个不看时间窗。"
                 )
             batch = await self._select_fragments(
                 self._fresh_fragments(pending)
@@ -2653,7 +2688,9 @@ class QzoneKitPlugin(Star):
         )
         return (
             f"先攒着了（现在 {len(pending)} 段，冷却还有 {hours:.0f} 小时左右），"
-            f"到点合成一条发。"
+            f"到点合成一条发。\n"
+            "【提示】如果是老大点名让你发的，别用这个工具攒着——"
+            "改用 qzone_post_on_demand 重发一次，那个无视冷却、立刻发。"
         )
 
     # ── 冷却到点：把欠着的换掉 / 发出去 ──────────────────────────────────

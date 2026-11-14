@@ -85,17 +85,24 @@ AI 配置时先看一眼 `data/plugins/astrbot_plugin_private_companion/metadata
 | 4 | **自动改签名** | 她自己判断心情/目标/兴趣变了就换；平时 **13~32 天**一次，非常重要 **22~29.2 小时**；冷却没过就记下来，新的覆盖旧的 |
 | 5 | **自动发说说** | 发泄 / 被安慰 / 新鲜事 / 重要事 / 想记录 / 有感触时发；平时 **2~3.6 天**一条，非常重要 **22~29.2 小时**；不重要的小事**攒着合成一条**；**3 天没发就保底发一条**日常；**75%** 概率带表情包（来自「表情包管理器」的全部图包，GIF 动态原样发）；会自动躲开「每天那条总结」（见下） |
 
-## 五个工具（模型能直接调）
+## 六个工具（模型能直接调）
 
 | 工具 | 干什么 | 使用者怎么说 |
 | --- | --- | --- |
 | `qzone_delete_feeds(pos, date_text)` | 删说说：`pos=1` 删最新那条（由近到远）；`date_text=昨天` 整批删 | 「删第 3 条」「把昨天的都删了」 |
 | `qq_profile_update(field, value)` | 改资料：昵称 / 签名 / 状态 / 头像 | 「昵称改成泡泡」「状态换成摸鱼中」 |
 | `qzone_post_summary()` | 立刻发一条「今天的总结」（复用 QQ空间插件的写稿） | 「现在就发一条说说」 |
+| `qzone_post_on_demand(kind, extra, illustration, self_portrait)` | **老大叫她发就用这个**：立即发、**无视冷却**，攒着的一起发掉 | 「发条说说」「发个周记」「现在就发」 |
 | `qq_signature_maybe_change(text, importance)` | 她**自己想**换签名（受冷却管） | 不用人说，她自己会调 |
-| `qzone_mood_post(content, importance, sticker, illustration, self_portrait)` | 她**自己想**发说说（受冷却 + 攒批管）；`illustration` 非空就现画一张配图，`self_portrait=true` 是画她自己 | 同上 |
+| `qzone_mood_post(content, importance, sticker, illustration, self_portrait)` | 她**自己想**发说说（受冷却 + 攒批管）；`illustration` 非空就现画一张配图，`self_portrait=true` 是画她自己 | 不用人说，她自己会调 |
 
 `date_text` 支持：`今天` `昨天` `前天` `大前天` `2026-11-03` `11-03` `11月3日`。
+
+> **0.14.3：老大让发就一定发。**
+> 之前她回「冷却还有 57 小时」，是因为模型把「老大让我发」走到了 `qzone_mood_post`
+> （那个是「她自己想发」用的，看冷却）。现在两条保险：
+> ① 工具的说明写清了谁该用哪个；② 就算走错，只要老大那条消息里明说
+> 「发说说 / 发个周记 / 现在就发」这类，**插件也会自动无视冷却直接发**（说了「别发」则不会）。
 
 ## 三个自动开关（默认都开，配置时问使用者）
 
