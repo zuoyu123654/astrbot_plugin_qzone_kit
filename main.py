@@ -69,7 +69,7 @@ except Exception:  # noqa: BLE001
     )
 
 PLUGIN_NAME = "astrbot_plugin_qzone_kit"
-PLUGIN_VERSION = "0.14.5"
+PLUGIN_VERSION = "0.14.6"
 
 QZONE_PLUGIN = "astrbot_plugin_qzone"
 QQPROFILE_STATUS = "astrbot_plugin_qqprofile"
@@ -1345,14 +1345,34 @@ class QzoneKitPlugin(Star):
             )
         return desc
 
+    # 消息里提到「发说说这件事」的词（只有这种消息才注入状态，别每轮都加）
+    POST_TALK_HINTS = (
+        "说说", "空间", "动态", "冷却", "发条", "发个", "发一条", "配图",
+    )
+
+    def _talks_about_posting(self, event: AstrMessageEvent) -> bool:
+        """这条消息是不是在聊「发说说」这件事？"""
+
+        text = str(getattr(event, "message_str", "") or "").strip()
+        if not text:
+            return False
+        if self._owner_asked_to_post(event):
+            return True
+        return any(hint in text for hint in self.POST_TALK_HINTS)
+
     @filter.on_llm_request()
     async def inject_qzone_status(self, event: AstrMessageEvent, req: Any) -> None:
-        """每一轮都把「现在能不能发」塞给模型（临时内容，不进聊天历史）。"""
+        """**只有**在聊发说说的时候，才把「现在能不能发」塞给模型（临时内容，不进聊天历史）。
+
+        以前是每轮都塞，白烧 token，还容易让她在无关话题里突然提空间。
+        """
 
         if TextPart is None:
             return
         try:
             if not self._is_owner(event):
+                return
+            if not self._talks_about_posting(event):
                 return
         except Exception:  # noqa: BLE001
             return
@@ -1380,12 +1400,9 @@ class QzoneKitPlugin(Star):
                         pass
                     break
             req.extra_user_content_parts.append(part)
-            if not getattr(self, "_inject_logged", False):
-                self._inject_logged = True
-                logger.info(
-                    "[QzoneKit] 每轮都会把「空间现状」带给模型（只打这一次日志）：%s",
-                    text.splitlines()[1][:60] if len(text.splitlines()) > 1 else text[:60],
-                )
+            logger.debug(
+                "[QzoneKit] 已注入空间现状（%s 字）", len(text)
+            )
         except Exception as exc:  # noqa: BLE001
             logger.debug("[QzoneKit] 空间状态没塞进请求：%s", exc)
 
