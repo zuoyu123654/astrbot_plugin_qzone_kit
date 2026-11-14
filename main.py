@@ -69,7 +69,7 @@ except Exception:  # noqa: BLE001
     )
 
 PLUGIN_NAME = "astrbot_plugin_qzone_kit"
-PLUGIN_VERSION = "0.14.4"
+PLUGIN_VERSION = "0.14.5"
 
 QZONE_PLUGIN = "astrbot_plugin_qzone"
 QQPROFILE_STATUS = "astrbot_plugin_qqprofile"
@@ -1165,9 +1165,12 @@ class QzoneKitPlugin(Star):
 
         Args:
             kind(string): weekly 周记 / chat 最近聊天 / video 刷到的视频 / diary 日记 / mood 最近状况与心情 / auto；也可填原话；不确定就留空（按 auto）
-            extra(string): 补充要求（比如老大指定了内容方向），没有就留空
+            extra(string): **只写正文的补充要求**（内容方向、语气、写到哪件事）。
+                老大要「配一张图」别写在这里——写在这里不会画，要用下面的 illustration。
             illustration(string): 想给这条说说**现画一张配图**时填画面描述（用你自己的话写，
-                40~120 字）。填了会让本机豆包画一张，画好（约一分钟）再带图发。留空 = 不画。
+                40~120 字：画什么、什么动作、什么风格、什么光）。填了会让本机豆包画一张，
+                画好（约一分钟）再带图发。留空 = 不画。
+                例：老大说「发条说说，配一张你想画的」→ illustration 写你心里那个画面。
             self_portrait(bool): 画的是你自己（你的样子/你在做什么）就设 true，会带角色参考图。
         """
 
@@ -1197,6 +1200,8 @@ class QzoneKitPlugin(Star):
             return f"没写成，生成出错了：{exc}"
         if not body:
             return "没写成，模型没给正文"
+        # 老大要配图但模型没给画面描述 ⇒ 插件自己按正文写一段（别再让她漏图）
+        desc = await self._maybe_picture(event, body, extra, illustration)
         sticker = self._guess_category(body)
         result = await self._apply_post(
             body,
@@ -1204,9 +1209,9 @@ class QzoneKitPlugin(Star):
             f"老大点名要发（{k}）",
             sticker,
             force=True,
-            illustration=(illustration or "").strip(),
+            illustration=desc,
             umo=str(getattr(event, "unified_msg_origin", "") or ""),
-            self_portrait=bool(self_portrait),
+            self_portrait=bool(self_portrait) or ("鲸鱼娘" in desc),
         )
         logger.info("[QzoneKit] 按需发说说（%s）：%s", k, body[:40])
         return f"{result}｜类型={k}"
@@ -1269,6 +1274,76 @@ class QzoneKitPlugin(Star):
                 "· 老大问「现在能不能发」：能。直接发，别答「不能发」「等冷却」。",
             ],
         )
+
+    # 「老大要配图」的说法（没给画面描述时，插件自己按正文写一段）
+    ILLUSTRATION_ASKS = (
+        "插图", "画一张", "画一幅", "画个", "画一只", "画一个", "配图",
+    )
+    ILLUSTRATION_NO = ("不要配图", "别配图", "不用配图", "不配图", "别画", "不要画")
+
+    def _asks_for_image(self, *texts: str) -> bool:
+        """这句话里是不是在要一张图？（否定说法不算）
+
+        「配上一张想画的图片」「配一只小猫的图片」这种不让写死词组——
+        只要有「配」又有「图/画」就算，省得措辞一变就漏。
+        """
+
+        blob = " ".join(str(t or "") for t in texts)
+        if not blob:
+            return False
+        if any(no in blob for no in self.ILLUSTRATION_NO):
+            return False
+        if any(hint in blob for hint in self.ILLUSTRATION_ASKS):
+            return True
+        return ("配" in blob) and any(w in blob for w in ("图", "画"))
+
+    async def _auto_illustration_desc(self, body: str, extra: str = "") -> str:
+        """模型忘了给画面描述时，插件自己按说说正文写一段（再交给豆包画）。"""
+
+        prompt = (
+            "给下面这条 QQ 空间说说配一张画。写一段画面描述交给生图模型：\n"
+            "40~120 字，讲清画什么、什么动作、什么风格、什么光；只写画面，"
+            "不要写「配图」「请画」这种要求，也不要写文字。\n"
+            "如果这张画里是她本人（这条说说写的是她自己），就用「鲸鱼娘」称呼她、画她本人在画面里；\n"
+            "如果是猫、食物、风景那种，就照实写，不要硬塞一个人进去。\n"
+            "只输出画面描述本身，不要解释。\n\n"
+            f"【说说】{body}\n"
+            + (f"【老大额外要求】{str(extra).strip()}\n" if str(extra or "").strip() else "")
+        )
+        try:
+            desc = (await self._llm(prompt)).strip().strip('"“”').strip()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[QzoneKit] 自动写画面描述失败：%s", exc)
+            return ""
+        return desc[:300]
+
+    async def _maybe_picture(
+        self,
+        event: AstrMessageEvent,
+        body: str,
+        extra: str,
+        illustration: str,
+    ) -> str:
+        """要配图时返回画面描述：优先用模型给的，没给就插件自己写一段。
+
+        为什么要有兜底：0.14.4 之前她常把「配一张想画的图」写进 extra 当文字，
+        illustration 留空 —— 于是说说发出去了但没图。这里就不靠她记不记得填参数了。
+        """
+
+        desc = str(illustration or "").strip()
+        if desc or not self.ai_image_enabled:
+            return desc
+        if not self._asks_for_image(
+            extra, str(getattr(event, "message_str", "") or "")
+        ):
+            return ""
+        desc = await self._auto_illustration_desc(body, extra)
+        if desc:
+            logger.info(
+                "[QzoneKit] 老大要配图、但没给画面描述 → 插件自己写一段再画：%s",
+                desc[:50],
+            )
+        return desc
 
     @filter.on_llm_request()
     async def inject_qzone_status(self, event: AstrMessageEvent, req: Any) -> None:
@@ -1361,13 +1436,14 @@ class QzoneKitPlugin(Star):
                 "[QzoneKit] 老大在消息里明说要发（%s）→ 无视冷却，立即发，不再攒",
                 str(getattr(event, "message_str", ""))[:30],
             )
+        desc = await self._maybe_picture(event, text, "", illustration)
         return await self._apply_post(
             text,
             importance,
             reason or "自己想的",
             (sticker or "").strip(),
             force=forced,
-            illustration=(illustration or "").strip(),
+            illustration=desc,
             umo=str(getattr(event, "unified_msg_origin", "") or ""),
             self_portrait=bool(self_portrait),
         )
