@@ -69,7 +69,7 @@ except Exception:  # noqa: BLE001
     )
 
 PLUGIN_NAME = "astrbot_plugin_qzone_kit"
-PLUGIN_VERSION = "0.14.6"
+PLUGIN_VERSION = "0.14.7"
 
 QZONE_PLUGIN = "astrbot_plugin_qzone"
 QQPROFILE_STATUS = "astrbot_plugin_qqprofile"
@@ -124,8 +124,11 @@ B. 要不要发一条 QQ 空间说说？
    - 给 1~3 句、60~160 字的正文，第一人称、口语、具体（提一下是什么事），不要像总结报告。\n   - **分 2~3 段写**，每段 30~150 字，段与段之间空一行；不要写成一整大段，别堆比喻和生僻词。
 
 【隐私红线（这条最重要，违反就整条作废）】
-- 下面【最近聊天】默认只放**老大自己和他私聊**的内容；如果里面出现了群里别人说的话，
-  那只是给你判断她心情用的参考，**一句都不许写进说说**。
+- 下面【最近聊天】里每条前面都标着（私聊）或（群聊·群友）。
+  **（群聊·群友）那些是群里别人说的，不是老大说的。**
+  可以拿来当「今天群里在聊什么」的素材，但不能说成老大自己经历的事、
+  不能写成「老大说了什么」，更不能替那个人表达立场。
+- 说到底是群友在骂人、在吵架、在聊政治，就只写她自己的观察和感受，不转述观点。
 - 说说里不许出现任何人的 QQ 号或尾号、昵称、群名、@某某。
 - 不许复述，也不许改写别人的原话。要提只能写成没有指向的概括，
   比如「今天群里聊到个有意思的事」，**不能写具体内容**。
@@ -378,10 +381,10 @@ class QzoneKitPlugin(Star):
         self.judge_minutes = max(1, int(cfg.get("judge_interval_minutes", 45) or 45))
         # 只在「有新聊天」时才判断；间隔随机浮动，别像闹钟
         self.judge_only_on_new = bool(cfg.get("judge_only_on_new", False))
-        # 群聊里是别人说的话。喂进说说判断，她就会把群友的话安到老大头上
+        # 群聊里是别人说的话。可以用来当素材（群里的气氛本身也是她的生活），
+        # 但喂进去时必须标清楚来源，否则她会把群友的话安到老大头上
         # （实测：群里有人骂「马化腾想钱想疯了」，她写说说时当成了老大的事）。
-        # 默认只喂私聊；想让她参考群里的气氛再把这项打开。
-        self.judge_include_group = bool(cfg.get("judge_include_group_messages", False))
+        self.judge_include_group = bool(cfg.get("judge_include_group_messages", True))
         # 攒够条数才判断：群聊一条消息的分量比私聊轻，但门槛仍要够，不然一直在小额烧钱
         try:
             self.judge_group_min_messages = max(1, int(cfg.get("judge_group_min_messages", 30) or 30))
@@ -3708,8 +3711,9 @@ class QzoneKitPlugin(Star):
 
     async def _recent_block(self) -> str:
         recent = self.state.get("recent") or []
-        # 群聊是别人说的，不能当成「老大最近聊了什么」写进说说。
-        if not getattr(self, "judge_include_group", False):
+        # 群聊可以用来当素材（群里的气氛本身也是她的生活），但必须标出来源：
+        # 不标的话模型分不清，会把群友的话当成「老大最近聊的事」写进说说。
+        if not getattr(self, "judge_include_group", True):
             recent = [x for x in recent if int(x.get("g") or 0) == 0]
         if not recent:
             return "（最近没有聊天）"
@@ -3719,7 +3723,8 @@ class QzoneKitPlugin(Star):
                 ts = datetime.fromtimestamp(int(item.get("at") or 0)).strftime("%m-%d %H:%M")
             except Exception:  # noqa: BLE001
                 ts = "?"
-            lines.append(f"[{ts}] {item.get('who', '')}: {item.get('text', '')}")
+            kind = "群聊·群友" if int(item.get("g") or 0) == 1 else "私聊"
+            lines.append(f"[{ts}]（{kind}）{item.get('who', '')}: {item.get('text', '')}")
         return "\n".join(lines)
 
     async def _llm(self, prompt: str) -> str:
