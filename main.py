@@ -56,7 +56,7 @@ except Exception:  # noqa: BLE001
     )
 
 PLUGIN_NAME = "astrbot_plugin_qzone_kit"
-PLUGIN_VERSION = "0.13.1"
+PLUGIN_VERSION = "0.13.2"
 
 QZONE_PLUGIN = "astrbot_plugin_qzone"
 QQPROFILE_STATUS = "astrbot_plugin_qqprofile"
@@ -94,6 +94,15 @@ B. 要不要发一条 QQ 空间说说？
      写的时候用第一人称、克制一点，别点名骂人、别写成对谁的控诉。
    - 不值得：日常寒暄、重复的话题、没什么可说的。
    - 给 1~3 句、60~160 字的正文，第一人称、口语、具体（提一下是什么事），不要像总结报告。\n   - **分 2~3 段写**，每段 30~150 字，段与段之间空一行；不要写成一整大段，别堆比喻和生僻词。
+
+【隐私红线（这条最重要，违反就整条作废）】
+- 下面【最近聊天】里**大部分是群里别人说的话**。那只是给你判断她心情用的参考素材，
+  **一句都不许写进说说**。
+- 说说里不许出现任何人的 QQ 号或尾号、昵称、群名、@某某。
+- 不许复述，也不许改写别人的原话。要提只能写成没有指向的概括，
+  比如「今天群里聊到个有意思的事」，**不能写具体内容**。
+- 只能写「她自己」看到什么、想什么、什么感受。写给陌生人看也不怕的内容。
+- 如果这条说说的素材主要是别人的事，那就干脆不发（post.want=false）。
 
 【怎么把她现在的状态用上（很重要）】
 - 睡眠/精力差（比如「很晚了」「精神发飘」「困」）→ 只写短句、轻的，别长篇大论；太晚了宁可少发或干脆不发。
@@ -170,6 +179,54 @@ def ts_to_day(ts: Any) -> date | None:
         return datetime.fromtimestamp(int(ts)).date()
     except (TypeError, ValueError, OSError):
         return None
+
+
+#: 这些是系统塞进来的东西，不是人在说话。当聊天记录存下去会污染判断素材，
+#: 还会让她写出莫名其妙的东西（实测 state 里就混进过 <system_reminder> 和 CRON 上下文）。
+CHAT_NOISE_PREFIXES = (
+    "<system_reminder>",
+    "# CRON JOB CONTEXT",
+    "[SCHEDULE REMINDER]",
+    "[[",
+    "</",
+)
+
+
+def is_chat_noise(text: str) -> bool:
+    t = str(text or "").strip()
+    return any(t.startswith(p) for p in CHAT_NOISE_PREFIXES)
+
+
+def privacy_violation(text: str, recent: list[dict], guard: bool = True) -> str:
+    """这条说说会不会泄露别人的隐私？返回原因，空串表示干净。
+
+    素材是群聊消息，模型完全可能把某个人说的话、甚至 QQ 尾号写进去。
+    空间是好友可见的公开场合，一条都不能漏 —— 宁可这次不发。
+    """
+    if not guard:
+        return ""
+    body = str(text or "")
+    if not body:
+        return ""
+    flat = re.sub(r"\s+", "", body)
+    group_msgs = [x for x in (recent or []) if int(x.get("g") or 0) == 1]
+    if not group_msgs:
+        return ""
+    # 1) 群成员的 QQ 尾号
+    for item in group_msgs:
+        who = str(item.get("who") or "").strip()
+        if len(who) >= 3 and re.search(r"(?<!\d)" + re.escape(who) + r"(?!\d)", body):
+            return f"出现了群成员的 QQ 尾号 {who}"
+    # 2) 连续 8 个字和某条群消息重合 —— 基本就是在复述原话
+    for item in group_msgs:
+        msg = re.sub(r"\s+", "", str(item.get("text") or ""))
+        if len(msg) < 8:
+            continue
+        for i in range(len(msg) - 8 + 1):
+            seg = msg[i : i + 8]
+            if seg in flat:
+                return f"疑似复述群聊原话「{seg}」"
+    return ""
 
 
 @register(PLUGIN_NAME, "paopao", "空间小助手：发/删说说、改昵称签名、按心情改 QQ 状态（自带空间客户端）", PLUGIN_VERSION)
@@ -372,6 +429,24 @@ class QzoneKitPlugin(Star):
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.state_file = self.data_dir / "state.json"
         self.state: dict[str, Any] = self._load_state()
+        # 顺手清掉以前混进聊天记录的系统消息（<system_reminder>、CRON 上下文那些）——
+        # 它们不是人在说话，留在判断素材里只会让模型写出莫名其妙的东西。
+        _recent = self.state.get("recent")
+        if isinstance(_recent, list):
+            _kept = [
+                x for x in _recent
+                if isinstance(x, dict) and not is_chat_noise(x.get("text"))
+            ]
+            if len(_kept) != len(_recent):
+                self.state["recent"] = _kept
+                logger.info(
+                    "[QzoneKit] 清掉 %s 条混进聊天记录的系统消息",
+                    len(_recent) - len(_kept),
+                )
+                try:
+                    self._save_state()
+                except Exception:  # noqa: BLE001
+                    pass
         # 上次设过的 QQ 状态（避免每轮都重复改）
         self._last_status = str(
             (self.state.get("qq_status") or {}).get("last") or ""
@@ -1830,7 +1905,27 @@ class QzoneKitPlugin(Star):
                 logger.error("[QzoneKit] 自带客户端发总结失败：%s", exc)
             await asyncio.sleep(120)
 
+    # ── 隐私护栏：说说里不许出现群成员的信息 ────────────────────────────
+    def _privacy_guard_on(self) -> bool:
+        try:
+            value = self.config.get("qzone_privacy_guard", True) if isinstance(self.config, dict) else True
+        except Exception:  # noqa: BLE001
+            return True
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in {"1", "true", "yes", "on", "启用"}
+
+    def _privacy_violation(self, text: str) -> str:
+        """这条说说会不会泄露别人的隐私？返回原因，空串表示干净。"""
+        return privacy_violation(text, self.state.get("recent") or [], self._privacy_guard_on())
+
     async def _publish(self, text: str, images: list[str] | None = None) -> tuple[bool, str]:
+        bad = self._privacy_violation(text)
+        if bad:
+            logger.warning(
+                "[QzoneKit] 拦下这条说说（%s），没有发布。正文：%s", bad, str(text)[:120]
+            )
+            return False, f"这条里有群聊隐私（{bad}），没发"
         service = self._service()
         if service is None:
             return False, "拿不到 QQ 空间客户端（既没装「QQ空间」插件，自带客户端也没起来）"
@@ -2260,6 +2355,8 @@ class QzoneKitPlugin(Star):
         try:
             text = str(event.message_str or "").strip()
             if not text:
+                return
+            if is_chat_noise(text):
                 return
             sender = str(getattr(event, "get_sender_id", lambda: "")() or "")
             try:
