@@ -64,12 +64,25 @@ except Exception:  # noqa: BLE001
     )
 
 PLUGIN_NAME = "astrbot_plugin_qzone_kit"
-PLUGIN_VERSION = "0.14.0"
+PLUGIN_VERSION = "0.14.1"
 
 QZONE_PLUGIN = "astrbot_plugin_qzone"
 QQPROFILE_STATUS = "astrbot_plugin_qqprofile"
 # 说说配图用的生图插件（可选依赖；没装就只发纯文字）
 DOUBAO_PLUGIN = "astrbot_plugin_doubao_paint"
+
+# 画面描述里出现这些词 ⇒ 当成「画她自己」，用「豆包画画」的角色参考图锁形象，
+# 免得配图里画出来是别人。风景/物品那种就别塞人物参考图了。
+SELF_HINTS_QZ = (
+    "鲸鱼娘",
+    "我自己",
+    "画我",
+    "我的样子",
+    "我的尾巴",
+    "本鲸鱼娘",
+    "泡泡",
+    "你的样子",
+)
 
 CN_DAY_OFFSET = {
     "大前天": 3,
@@ -143,12 +156,15 @@ reply(直接对话回应) —— 没合适的就留空字符串。
 她脑子里那个画面 —— 就给一段画面描述，写进 illustration 字段：40~120 字，
 讲清画什么、什么动作、什么风格、什么光；不要写「配图」「请画」这种要求，也不要写文字。
 不想配就留空字符串。表情包和现画的图**二选一**，别同时给。
+如果这张画里**有她自己**（她在做什么、她的样子），把 illustration_self 设成 true ——
+这样会拿她的角色参考图去画，形象不会跑偏；画的是天空/风景/东西就设 false。
 
 严格只输出一个 JSON 对象，不要 Markdown、不要解释：
 {"signature": {"change": true/false, "text": "...", "importance": "normal|important|critical", "reason": "一句话"},
  "post": {"want": true/false, "text": "...", "importance": "normal|important|critical", "reason": "一句话"},
  "sticker": "happy 之类的分类，或空字符串",
- "illustration": "画面描述，或空字符串"}
+ "illustration": "画面描述，或空字符串",
+ "illustration_self": true/false}
 
 【她现在的状态（来自人格与其它插件）】
 [[state]]
@@ -1134,6 +1150,7 @@ class QzoneKitPlugin(Star):
         kind: str = "",
         extra: str = "",
         illustration: str = "",
+        self_portrait: bool = False,
     ) -> str:
         """老大点名让她发某类 QQ 空间说说时调用（立即发，不受冷却限制）。
 
@@ -1144,6 +1161,7 @@ class QzoneKitPlugin(Star):
             extra(string): 补充要求，没有就留空
             illustration(string): 想给这条说说**现画一张配图**时填画面描述（用你自己的话写，
                 40~120 字）。填了会让本机豆包画一张，画好（约一分钟）再带图发。留空 = 不画。
+            self_portrait(bool): 画的是你自己（你的样子/你在做什么）就设 true，会带角色参考图。
         """
 
         if not self._is_owner(event):
@@ -1181,6 +1199,7 @@ class QzoneKitPlugin(Star):
             force=True,
             illustration=(illustration or "").strip(),
             umo=str(getattr(event, "unified_msg_origin", "") or ""),
+            self_portrait=bool(self_portrait),
         )
         logger.info("[QzoneKit] 按需发说说（%s）：%s", k, body[:40])
         return f"{result}｜类型={k}"
@@ -1194,6 +1213,7 @@ class QzoneKitPlugin(Star):
         reason: str = "",
         sticker: str = "",
         illustration: str = "",
+        self_portrait: bool = False,
     ) -> str:
         """她「想发一条说说」时调用：发泄、被安慰到、遇到新鲜事/重要事、想记录、
         想找人说说话、有感触——这些时候可以发。日常寒暄不要发。
@@ -1210,8 +1230,10 @@ class QzoneKitPlugin(Star):
                 food/money/greeting/work/entertainment/teasing/reply；没有合适的就留空
             illustration(string): 想给这条说说**现画一张配图**时填画面描述（用你自己的话写：
                 画什么、什么动作、什么风格、什么光，40~120 字）。填了会让本机豆包画一张，
-                画好（约一分钟）再带图发；画不出来就退回纯文字。留空 = 不画。
+                画好（约一分钟）再带图发；画不出来就退回表情包/纯文字。留空 = 不画。
                 和表情包二选一：填了这个就不再配表情包。
+            self_portrait(bool): 这张画里是**你自己**（画你的样子/你在做什么）就设 true，
+                会拿角色参考图当参考，形象不会跑偏；画的是风景/东西就留 false。
         """
 
         if not self._is_owner(event):
@@ -1226,6 +1248,7 @@ class QzoneKitPlugin(Star):
             (sticker or "").strip(),
             illustration=(illustration or "").strip(),
             umo=str(getattr(event, "unified_msg_origin", "") or ""),
+            self_portrait=bool(self_portrait),
         )
 
     # ── 表情包（可选，需要使用者同意才会启用） ────────────────────────────
@@ -1397,8 +1420,14 @@ class QzoneKitPlugin(Star):
             return None, "「豆包画画」插件版本太老（没有出图方法），升级一下再用"
         return star, ""
 
-    async def _ai_paint(self, desc: str) -> tuple[str, str]:
-        """让豆包现画一张说说配图：返回 (图片路径, 错误原因)。"""
+    async def _ai_paint(
+        self, desc: str, self_portrait: bool = False
+    ) -> tuple[str, str]:
+        """让豆包现画一张说说配图：返回 (图片路径, 错误原因)。
+
+        画面里是她自己（`self_portrait` / 描述里提到她）⇒ 从「豆包画画」的 refs 里
+        挑一张角色参考图画进去，免得配图里蹦出来一个别人。
+        """
 
         desc = str(desc or "").strip()
         if not desc:
@@ -1408,15 +1437,52 @@ class QzoneKitPlugin(Star):
         star, why = self._doubao_plugin()
         if star is None:
             return "", why
+
+        # ① 是不是画她自己：显式说 > 豆包那边的判断 > 描述里的关键词
+        is_self = bool(self_portrait)
+        if not is_self:
+            probe = getattr(star, "_looks_like_self", None)
+            if callable(probe):
+                try:
+                    is_self = bool(probe(desc))
+                except Exception:  # noqa: BLE001
+                    is_self = False
+        if not is_self and any(h in desc for h in SELF_HINTS_QZ):
+            is_self = True
+
+        refs: list[str] = []
+        body = desc
+        if is_self:
+            ref = ""
+            pick = getattr(star, "_pick_ref", None)
+            if callable(pick):
+                try:
+                    ref = str(pick("", desc) or "")
+                except Exception:  # noqa: BLE001
+                    ref = ""
+            if ref and Path(ref).is_file():
+                refs = [ref]
+            appear = getattr(star, "_self_appearance_text", None)
+            if callable(appear):
+                try:
+                    body = desc + "\n\n" + str(appear(bool(refs)) or "")
+                except Exception:  # noqa: BLE001
+                    pass
+            logger.info(
+                "[QzoneKit] 配图画她自己：参考图=%s｜%s",
+                Path(refs[0]).name if refs else "（没有参考图，用文字锁形象）",
+                desc[:40],
+            )
+
         lock = getattr(star, "_lock", None)
         started = time.time()
 
         async def _run() -> tuple[bool, str, list[str]]:
             # 跟豆包画画插件共用一把锁：同一时刻只画一张，别抢豆包的输入框
             if lock is None:
-                return await star._generate(desc, [])
+                return await star._generate(body, refs)
             async with lock:
-                return await star._generate(desc, [])
+                return await star._generate(body, refs)
 
         try:
             ok, err, files = await asyncio.wait_for(_run(), self.ai_image_timeout)
@@ -1480,20 +1546,24 @@ class QzoneKitPlugin(Star):
         except Exception as exc:  # noqa: BLE001
             logger.debug("[QzoneKit] 清理旧配图失败：%s", exc)
 
-    def _spawn_ai_post(self, body: str, desc: str, umo: str = "") -> None:
+    def _spawn_ai_post(
+        self, body: str, desc: str, umo: str = "", self_portrait: bool = False
+    ) -> None:
         """后台把「画配图 → 带图发说说」跑完（画一次要一分钟，别卡住工具调用）。"""
 
-        task = asyncio.create_task(self._post_with_illustration(body, desc, umo))
+        task = asyncio.create_task(
+            self._post_with_illustration(body, desc, umo, self_portrait)
+        )
         self._ai_tasks.add(task)
         task.add_done_callback(self._ai_tasks.discard)
 
     async def _post_with_illustration(
-        self, body: str, desc: str, umo: str = ""
+        self, body: str, desc: str, umo: str = "", self_portrait: bool = False
     ) -> None:
-        """先画配图，画好再带图发；画不出来就退回纯文字，绝不丢这条说说。"""
+        """先画配图，画好再带图发；画不出来退回表情包 / 纯文字，绝不丢这条说说。"""
 
         started = time.time()
-        path, why = await self._ai_paint(desc)
+        path, why = await self._ai_paint(desc, self_portrait)
         if path:
             ok, err = await self._publish(body, [path])
             note = (
@@ -1502,11 +1572,16 @@ class QzoneKitPlugin(Star):
                 else f"配图画好了，但说说没发出去：{err}"
             )
         else:
-            logger.warning("[QzoneKit] 配图没画出来（%s），改成纯文字发", why)
-            ok, err = await self._publish(body)
-            note = (
-                f"配图没画出来（{why}），先发纯文字了" if ok else f"说说没发出去：{err}"
-            )
+            # 现画失败：能补一张表情包就补，别让这条说说秃着
+            logger.warning("[QzoneKit] 配图没画出来（%s），改配表情包/纯文字", why)
+            img = self._pick_sticker("")
+            ok, err = await self._publish(body, [img] if img else None)
+            if not ok:
+                note = f"说说没发出去：{err}"
+            elif img:
+                note = f"配图没画出来（{why}），配了张表情包先发了"
+            else:
+                note = f"配图没画出来（{why}），先发纯文字了"
         logger.info("[QzoneKit] %s（%.1fs）", note, time.time() - started)
         if umo:
             try:
@@ -1514,13 +1589,24 @@ class QzoneKitPlugin(Star):
             except Exception as exc:  # noqa: BLE001
                 logger.debug("[QzoneKit] 配图结果没回话：%s", exc)
 
-    def _frag_illustration(self, fragments: list[dict[str, Any]]) -> str:
+    def _frag_illustration(
+        self, fragments: list[dict[str, Any]]
+    ) -> tuple[str, bool]:
         """从攒着的碎片里取最后一条画面描述（新的那条说了算）。"""
 
         for f in reversed(fragments or []):
             desc = str(f.get("illustration") or "").strip()
             if desc:
-                return desc
+                return desc, bool(f.get("illustration_self"))
+        return "", False
+
+    def _frag_sticker(self, fragments: list[dict[str, Any]]) -> str:
+        """从攒着的碎片里取最后一条表情包分类。"""
+
+        for f in reversed(fragments or []):
+            cat = str(f.get("sticker") or "").strip()
+            if cat:
+                return cat
         return ""
 
     # ── 签名：冷却 + 待换队列（新的覆盖旧的） ─────────────────────────────
@@ -2399,11 +2485,14 @@ class QzoneKitPlugin(Star):
         force: bool = False,
         illustration: str = "",
         umo: str = "",
+        self_portrait: bool = False,
     ) -> str:
         """发一条说说：管冷却、攒批、配图（表情包 / 现画）。
 
         illustration = 想现画一张配图的画面描述（空 = 不画）。给了就走后台：
         先让豆包画，画好再带图发，工具这边立刻返回，不会被 120 秒的超时掐掉。
+        现画和表情包**二选一**：有画面描述就不配表情包了；现画失败才退回表情包。
+        self_portrait = 画面里是她自己（会带角色参考图）。
         """
 
         illustration = str(illustration or "").strip()[:300]
@@ -2425,7 +2514,9 @@ class QzoneKitPlugin(Star):
                         "importance": importance,
                         "reason": reason,
                         "at": now,
+                        "sticker": sticker,
                         "illustration": illustration,
+                        "illustration_self": bool(self_portrait),
                     }
                 )
                 pending = pending[-self.max_fragments :]
@@ -2454,18 +2545,22 @@ class QzoneKitPlugin(Star):
                         "text": text,
                         "importance": importance,
                         "at": now,
+                        "sticker": sticker,
                         "illustration": illustration,
+                        "illustration_self": bool(self_portrait),
                     }
                 ]
             )
             body = await self._merge_fragments(batch)
             # 这条自己说了要配图就用它的；没说就看看攒着的那批里有没有人想配
-            desc = self._frag_illustration(batch)
+            desc, desc_self = self._frag_illustration(batch)
             if desc and not self.ai_image_enabled:
                 logger.info("[QzoneKit] 现画配图开关关着，这条改配表情包/纯文字")
-                desc = ""
-            # 想现画一张 ⇒ 不再配表情包（一张图就够了）
+                desc, desc_self = "", False
+            # 想现画一张 ⇒ 不再配表情包（一张图就够了，别加两张）
             img = "" if desc else self._pick_sticker(sticker or "")
+            if desc and self.sticker_enabled:
+                logger.info("[QzoneKit] 这条要现画配图，跳过表情包")
             if self.dry_run:
                 logger.info(
                     "[QzoneKit][试运行] 本来要发说说（%s 字，%s）→ %s%s",
@@ -2479,12 +2574,13 @@ class QzoneKitPlugin(Star):
                     + ("（现画配图）" if desc else ("（带图）" if img else ""))
                 )
             if desc:
-                self._spawn_ai_post(body, desc, umo)
+                self._spawn_ai_post(body, desc, umo, desc_self)
                 logger.info(
-                    "[QzoneKit] 说说先画配图再发（%s 字）：%s｜画面：%s",
+                    "[QzoneKit] 说说先画配图再发（%s 字）：%s｜画面：%s%s",
                     len(body),
                     body[:30],
                     desc[:40],
+                    "（她自己）" if desc_self else "",
                 )
                 return "配图在画了，画好就发（大概一分钟）"
             ok, err = await self._publish(body, [img] if img else None)
@@ -2500,7 +2596,9 @@ class QzoneKitPlugin(Star):
                 "importance": importance,
                 "reason": reason,
                 "at": now,
+                "sticker": sticker,
                 "illustration": illustration,
+                "illustration_self": bool(self_portrait),
             }
         )
         pending = pending[-self.max_fragments :]
@@ -2569,21 +2667,25 @@ class QzoneKitPlugin(Star):
                 batch = await self._select_fragments(fresh)
                 body = await self._merge_fragments(batch)
                 if body:
-                    desc = self._frag_illustration(batch)
+                    desc, desc_self = self._frag_illustration(batch)
                     img = ""
                     if desc and self.ai_image_enabled:
                         # 攒着的那条当时想配一张画：现在画（这个循环不急，等得起）
-                        img, why = await self._ai_paint(desc)
+                        img, why = await self._ai_paint(desc, desc_self)
                         if not img:
                             logger.warning(
-                                "[QzoneKit] 攒着的说说配图没画出来（%s），发纯文字", why
+                                "[QzoneKit] 攒着的说说配图没画出来（%s），改配表情包/纯文字",
+                                why,
                             )
+                    if not img:
+                        # 没画面描述（或画失败）⇒ 按这条当时说的表情包分类配一张
+                        img = self._pick_sticker(self._frag_sticker(batch))
                     ok, err = await self._publish(body, [img] if img else None)
                     if ok:
                         logger.info(
                             "[QzoneKit] 冷却到点，攒的 %s 段说说发出去了%s",
                             len(fresh),
-                            "（带现画配图）" if img else "",
+                            "（带图）" if img else "",
                         )
                     else:
                         logger.warning("[QzoneKit] 发攒着的说说失败：%s", err)
@@ -3546,6 +3648,7 @@ class QzoneKitPlugin(Star):
                 item = data.get("post") or {}
                 if item.get("want") and str(item.get("text") or "").strip():
                     illus = str(data.get("illustration") or "").strip()
+                    illus_self = bool(data.get("illustration_self"))
                     if illus and (
                         not self.ai_image_enabled or random.random() > self.ai_image_prob
                     ):
@@ -3554,13 +3657,14 @@ class QzoneKitPlugin(Star):
                             self.ai_image_enabled,
                             self.ai_image_prob * 100,
                         )
-                        illus = ""
+                        illus, illus_self = "", False
                     await self._apply_post(
                         str(item["text"]).strip(),
                         str(item.get("importance") or "normal"),
                         str(item.get("reason") or "判断出来的"),
                         "" if illus else str(data.get("sticker") or ""),
                         illustration=illus,
+                        self_portrait=illus_self,
                     )
             if self.force_post_once:
                 # 测试用：不管模型说什么，都真改一次签名 + 真发一条（带图），用来验链路

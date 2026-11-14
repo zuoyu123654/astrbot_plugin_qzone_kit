@@ -462,13 +462,14 @@ async def download_file(source: str) -> bytes | None:
 **链路**：
 
 ```
-工具 qzone_mood_post / qzone_post_on_demand(illustration="画面描述")
+工具 qzone_mood_post / qzone_post_on_demand(illustration="画面描述", self_portrait=?)
   → _apply_post(illustration=…)              解析冷却/攒批，决定现在发还是攒着
   → _spawn_ai_post()                         后台任务，工具立刻返回「配图在画了」
-  → _ai_paint()                              调 astrbot_plugin_doubao_paint 的 _generate，
+  → _ai_paint(desc, self_portrait)           画她自己 ⇒ 先从 refs 挑角色参考图 + 锁形象说明；
+                                             再调 astrbot_plugin_doubao_paint 的 _generate，
                                              共用它的 _lock（同一时刻只画一张）
   → _prepare_generated()                     1728×2304 PNG → 长边 1600 的 JPEG
-  → _publish(body, [jpg])                    带图发；失败自动退回纯文字
+  → _publish(body, [jpg])                    带图发；失败退回表情包 → 再不行纯文字
   → context.send_message(umo, "说说发好了")   画完回一句
 ```
 
@@ -478,17 +479,52 @@ async def download_file(source: str) -> bytes | None:
 |---|---|
 | 画图放后台任务 | 工具 120 秒上限；等画完再返回，模型那轮就被掐了 |
 | 跟豆包画画插件共用 `_lock` | 同一时刻只画一张，别两条说说同时抢豆包的输入框 |
-| 画不出来就发纯文字 | 图是锦上添花，说说本身不能丢（和表情包那条失败策略一致） |
+| 画她自己时带角色参考图 | 不然豆包每次画出来都是不同的人，一看就出戏 |
+| 画不出来退回表情包 | 图是锦上添花，说说本身不能丢；有表情包就先补一张 |
 | 原图压成长边 1600 JPEG | 原图 4MB 左右，QQ空间上传接口容易失败；压完约 300KB |
 | 给了画面描述就不配表情包 | 一张图够了，两张图反而怪 |
 | 攒着的那条到点才画 | 冷却里可能攒好几天，提前画出来图会「过期」，也白占豆包 |
+
+### 7.8.1 画她自己：取角色参考图（0.14.1）
+
+`_ai_paint()` 判断「这张画里是不是她」，三个来源按优先级：
+
+1. 工具参数 `self_portrait=true`（她主动要画自己时的显式信号）；
+2. 委托给「豆包画画」的 `_looks_like_self()`（`你自己`、`泡泡`、`本鲸鱼娘`、`你的样子`…）；
+3. 本插件自己的关键词表 `SELF_HINTS_QZ`：`鲸鱼娘`、`我自己`、`画我`、`我的样子`、`我的尾巴`。
+   —— 第三条是必须的：自动判断时模型写的是「一只蓝色鲸鱼娘…」这种第三人称，前两条都认不出来。
+
+命中后：
+
+- `star._pick_ref("", desc)` 从 `plugin_data/astrbot_plugin_doubao_paint/refs/` 里挑——
+  描述里提到文件名（如「成熟」）就挑那张，否则回落到 `默认（Q版可爱 女仆装）.png`；
+- 把挑到的图作为 `ref_images` 传给 `_generate()`，豆包会把它当参考图画；
+- 提示词再追加 `star._self_appearance_text(有无参考图)`（蓝渐变长发、鲸鳍耳、鲸尾、白饭碗那套）。
+- 画风景/物品时**不塞**人物参考图（否则豆包可能硬塞一个角色进去）。
+
+实测（本机）：描述「一只鲸鱼娘端着白饭碗坐在傍晚的窗边」→ 31.6 秒出图，
+出来就是蓝发渐变 + 呆毛 + 鲸鳍耳 + 深蓝女仆裙 + 鲸尾 + 白饭碗，没跑偏。
+
+### 7.8.2 和表情包的分工（0.14.1 理顺）
+
+| 情况 | 行为 |
+|---|---|
+| 有 `illustration` + 表情包开着 | 只现画，**不**配表情包（日志：`这条要现画配图，跳过表情包`） |
+| 有 `illustration` 但画失败/超时 | `_pick_sticker("")` 补一张表情包；没有就纯文字（回话会说明原因） |
+| 只有 `sticker` 分类 | 按 `post_sticker_prob` 概率配表情包，老规矩 |
+| 冷却里攒着的那批到点发 | 碎片里记了 `illustration`/`illustration_self`/`sticker`，到点按记录来：先试画，画不出来再表情包（0.14.1 之前这条路完全没配图，是漏的） |
+| 自动判断（`JUDGE_PROMPT`） | 多两个字段 `illustration` / `illustration_self`，和 `sticker` **二选一**；她给了画面描述时 sticker 会被丢掉 |
+
+注意：`_publish` 走自带客户端时，QQ空间插件那层 `publish_post` 包装（会补表情包）不参与；
+只有回落到 QQ空间插件的 service 时才会经过它，而那时 `images` 已经不为 None，不会再补第二张。
 
 **怎么验证（本机实测过的）**：
 
 1. 让她在 QQ 上发：「发条说说，配一张你在海边端着饭碗的画」
    → 工具秒回「配图在画了」，约 30 秒后收到「说说发好了（配图画了 xx 秒）」，空间里那条带图。
-2. 日志关键字：`[QzoneKit] 配图画好了`、`配图压缩`、`说说先画配图再发`。
-3. 故意把豆包关掉再试一次 → 日志 `配图没画出来（…），改成纯文字发`，说说照样发出去。
+2. 日志关键字：`[QzoneKit] 配图画好了`、`配图压缩`、`说说先画配图再发`、
+   `配图画她自己：参考图=…`。
+3. 故意把豆包关掉再试一次 → 日志 `配图没画出来（…），改配表情包/纯文字`，说说照样发出去。
 
 **踩过的坑**：
 
@@ -503,7 +539,8 @@ async def download_file(source: str) -> bytes | None:
 ## 7. 边界（给使用者的实话）
 
 - **删说说不可撤销**：`qzone_delete_feeds` 按日期是**整批删**；调用前确认使用者说的是「删」。
-- **配图**：`post_sticker_enabled` 默认关，必须使用者明确同意才开（会读 `meme_manager` 的图包）。
+- **配图**：`post_sticker_enabled` 默认关，必须使用者明确同意才开（会读 `meme_manager` 的图包）；
+  现画配图 `post_ai_image_enabled` 默认开（要装豆包画画插件），两者二选一，现画失败才退回表情包。
 - **每天总结错过不补**：那个点没开机、机器人不在线，当天就没有总结——补发的总结会时间错位。
 - **和 QQ空间插件并存**：总结由 QQ空间 的 AutoPublish 发，本插件只管「她自己的即时说说」，两边各算冷却。
   本插件会避开总结时间；`daily_post_sync_qzone: false` 时完全不写对方配置。

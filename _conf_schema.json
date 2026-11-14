@@ -166,7 +166,7 @@
   },
   "post_sticker_enabled": {
     "type": "bool",
-    "description": "【需要使用者同意才开】发说说时配一张表情包：来源是「表情包管理器」(meme_manager) 里的表情包（https://github.com/anka-afk/astrbot_plugin_meme_manager），会从它所有图包里挑情绪合适的一张。默认关。",
+    "description": "【需要使用者同意才开】发说说时配一张表情包：来源是「表情包管理器」(meme_manager) 里的表情包（https://github.com/anka-afk/astrbot_plugin_meme_manager），会从它所有图包里挑情绪合适的一张。默认关。和「现画配图」二选一：说了要现画就不配表情包，现画失败才退回表情包。",
     "default": false
   },
   "post_sticker_keep_gif": {
@@ -206,7 +206,7 @@
   },
   "post_ai_image_enabled": {
     "type": "bool",
-    "description": "现画配图：发说说时她可以「自己想配一张画」，把画面描述交给「豆包画画」插件现画一张，画好（约一分钟）再带图发出去。画不出来就退回纯文字，不会丢说说。需要装 astrbot_plugin_doubao_paint；没装会自动跳过。",
+    "description": "现画配图：发说说时她可以「自己想配一张画」，把画面描述交给「豆包画画」插件现画一张，画好（约一分钟）再带图发出去。画她自己时会自动拿角色参考图，形象不会跑偏。画不出来退回表情包、再不行纯文字，不会丢说说。和表情包二选一。需要装 astrbot_plugin_doubao_paint；没装会自动跳过。",
     "default": true
   },
   "post_ai_image_prob": {

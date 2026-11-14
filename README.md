@@ -93,7 +93,7 @@ AI 配置时先看一眼 `data/plugins/astrbot_plugin_private_companion/metadata
 | `qq_profile_update(field, value)` | 改资料：昵称 / 签名 / 状态 / 头像 | 「昵称改成泡泡」「状态换成摸鱼中」 |
 | `qzone_post_summary()` | 立刻发一条「今天的总结」（复用 QQ空间插件的写稿） | 「现在就发一条说说」 |
 | `qq_signature_maybe_change(text, importance)` | 她**自己想**换签名（受冷却管） | 不用人说，她自己会调 |
-| `qzone_mood_post(content, importance, sticker, illustration)` | 她**自己想**发说说（受冷却 + 攒批管）；`illustration` 非空就现画一张配图 | 同上 |
+| `qzone_mood_post(content, importance, sticker, illustration, self_portrait)` | 她**自己想**发说说（受冷却 + 攒批管）；`illustration` 非空就现画一张配图，`self_portrait=true` 是画她自己 | 同上 |
 
 `date_text` 支持：`今天` `昨天` `前天` `大前天` `2026-11-03` `11-03` `11月3日`。
 
@@ -191,7 +191,7 @@ AI 配置时先看一眼 `data/plugins/astrbot_plugin_private_companion/metadata
 | `judge_interval_minutes` | 45 | 多久判断一次（试的时候可以填 2~3） |
 | `recent_message_limit` | 40 | 判断时回看多少条消息 |
 | `judge_provider_id` | 空 | 判断用哪个模型（空 = 当前会话模型） |
-| `post_sticker_enabled` | false | 发说说带表情包（**需要你同意才开**）。来源：「表情包管理器」`meme_manager`（https://github.com/anka-afk/astrbot_plugin_meme_manager），用它**所有图包**的图；GIF 原样发（保动画），其它格式转静态 JPEG；带图失败自动退回纯文字 |
+| `post_sticker_enabled` | false | 发说说带表情包（**需要你同意才开**）。来源：「表情包管理器」`meme_manager`（https://github.com/anka-afk/astrbot_plugin_meme_manager），用它**所有图包**的图；GIF 原样发（保动画），其它格式转静态 JPEG；带图失败自动退回纯文字。和「现画配图」**二选一**：说了要现画就不配表情包 |
 | `post_sticker_keep_gif` | true | GIF 动图原样发；关掉就退回「一律转静态 JPEG」 |
 | `post_sticker_prob` | 0.75 | 开的时候多少比例带图 |
 | `post_ai_image_enabled` | true | **现画配图**：说说的画面描述交给「豆包画画」插件现画一张，画好再带图发（依赖 `astrbot_plugin_doubao_paint`，没装自动跳过） |
@@ -216,10 +216,23 @@ AI 配置时先看一眼 `data/plugins/astrbot_plugin_private_companion/metadata
   豆包现画一张，**画好（约 20~60 秒）再带图发出去**。
 - 画图跑在**后台任务**里：工具一调用就返回「配图在画了」，不会被 AstrBot 的 120 秒工具超时掐掉；
   画完会回一句「说说发好了」。
-- **画不出来就退回纯文字**（豆包没开、超时、出图失败都算），绝不会把这条说说丢掉。
+- **画的是她自己 ⇒ 自动拿角色参考图**（0.14.1）：画面描述里提到她（鲸鱼娘/我自己/泡泡…），
+  或者调工具时把 `self_portrait` 设成 true，就会从「豆包画画」的 `refs` 里挑一张角色设定图当参考，
+  再补一句锁形象的说明。实测画出来就是那身蓝发+女仆裙+鲸尾+白饭碗，不会变成别人。
+  画风景/东西时**不会**塞人物参考图。
+- **画不出来就退回表情包，再不行才纯文字**（豆包没开、超时、出图失败都算），绝不会把这条说说丢掉。
 - 出的原图是 1728×2304 的 PNG（4MB 左右），发之前会压成**长边 1600 的 JPEG（约 300KB）**，上传稳一点。
 - 冷却里攒着的那条如果当时要配图，到点发车前才画（这个循环不急，等得起）。
-- 她说要配画时就不再配表情包了（一张图够了）；两套开关互不影响。
+
+### 现画配图 和 表情包 怎么分工（不打架）
+
+| 情况 | 结果 |
+| --- | --- |
+| 有画面描述 + 表情包开关也开着 | **只现画**，跳过表情包（一张图够了，不再叠第二张） |
+| 有画面描述，但现画失败/超时 | 退回**表情包**（开着且有图的话），再不行纯文字 |
+| 只有表情包分类、没有画面描述 | 照旧按 `post_sticker_prob` 概率配表情包 |
+| 冷却里攒着的那批到点发 | 按碎片里记的来：有画面描述就画，没有就按当时的表情包分类配（0.14.1 起补上，以前这条会秃着） |
+| 自动判断（她自己想发） | `illustration` 和 `sticker` **二选一**，她给了画面描述就画图 |
 
 开启与调参：
 
@@ -227,7 +240,7 @@ AI 配置时先看一眼 `data/plugins/astrbot_plugin_private_companion/metadata
 | --- | --- | --- |
 | `post_ai_image_enabled` | true | 总开关；没装豆包画画插件会自动跳过 |
 | `post_ai_image_prob` | 0.7 | **自动**发说说时，她说了想配画也只有 70% 会真画（省点时间）；她当场点名要配图的不受这个限制 |
-| `post_ai_image_timeout_seconds` | 200 | 等出图的上限，超时就不配图、发纯文字 |
+| `post_ai_image_timeout_seconds` | 200 | 等出图的上限，超时就不配图、退回表情包/纯文字 |
 
 > 豆包没开也没关系：豆包画画插件会自己把它拉起来（最小化在任务栏里），第一次冷启动会慢些，
 > 之后预热着一般是 20~30 秒。豆包图右下角有水印（非会员），发出去就这样。
