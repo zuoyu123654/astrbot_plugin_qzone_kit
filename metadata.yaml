@@ -1,7 +1,7 @@
 name: astrbot_plugin_qzone_kit
 logo: ./logo.png
 display_name: 空间小助手
-short_desc: 删说说、改资料；她自己会换签名、会发空间（攒多了会挑重要的发，可带表情包）
+short_desc: 删说说、改资料；她自己会换签名、会发空间（攒多了会挑重要的发，可配表情包或现画一张图）
 desc: >-
   【需要的前置】
   1. QQ空间 astrbot_plugin_qzone　2. QQ资料管理 astrbot_plugin_qqprofile —— 两个必装并启用。
@@ -10,6 +10,7 @@ desc: >-
      装了它，本插件才能读到她的睡眠/精力/情绪/关系/目标/日记/梦境这些真实状态，
      判断「该不该发说说、该换什么签名」会准得多；不装也能用，只是只能靠聊天记录猜。
   4. 可选：表情包管理器 meme_manager（给说说配图）。
+  5. 可选：豆包画画 astrbot_plugin_doubao_paint（说说现画一张图，画好再发；不装就只发纯文字）。
 
   【功能】
   1. 删说说：按「第几条」或「哪一天（今天/昨天/前天/具体日期）」整批删。
@@ -50,7 +51,14 @@ desc: >-
       判断心情的参考，一句都不许写进正文）；发出去之前还会再查一遍 —— 正文里出现群成员的
       QQ 尾号、或者有连续 8 个字和某条群聊原话重合，这条就不发。系统消息也不再混进判断素材。
       配置项 qzone_privacy_guard，默认开，不建议关。
-version: 0.13.2
+
+  12. 现画配图（0.14.0 起）：发说说时她可以自己想配一张图 —— 把画面描述交给「豆包画画」
+      插件现画一张，画好（约 20~60 秒）再带图发出去。画图在后台任务里跑，不会卡住工具调用；
+      画不出来（豆包没开/超时/失败）就退回纯文字，不会丢说说。原图 PNG 会先压成长边 1600 的
+      JPEG 再上传。冷却里攒着的那条，到点发车前才画。
+      配置项：post_ai_image_enabled（默认开）、post_ai_image_prob（自动发时 70% 才真画）、
+      post_ai_image_timeout_seconds（默认 200 秒）。
+version: 0.14.0
 author: paopao
 repo: https://github.com/zuoyu123654/astrbot_plugin_qzone_kit
 astrbot_version: ">=4.17.0"
@@ -62,3 +70,4 @@ tags:
   - 资料
   - 自动发说说
   - 自动签名
+  - 现画配图

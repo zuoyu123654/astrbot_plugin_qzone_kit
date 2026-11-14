@@ -186,6 +186,9 @@ Added llm tool: qzone_mood_post
 | `post_sticker_enabled` | false | 配图开关。**要使用者同意才开** |
 | `post_sticker_prob` | 0.75 | 多少比例的说说带图（0~1） |
 | `post_sticker_keep_gif` | true | GIF 动图原样发（保动画）；关掉就一律转静态 JPEG |
+| `post_ai_image_enabled` | true | 现画配图：说说可以把画面描述交给「豆包画画」插件现画一张，画好再带图发。没装豆包画画就自动跳过 |
+| `post_ai_image_prob` | 0.7 | **自动**发说说时，她说了想配画也只有这个概率真画；她当场点名的不受限 |
+| `post_ai_image_timeout_seconds` | 200 | 等豆包出图的上限，超时就不配图、发纯文字 |
 | `read_plugin_state` | true | 判断时读人格和其它插件的状态（只读） |
 | `state_source` | auto | 陪伴插件读哪个版本：auto / v1(6.x) / v2(7.x) |
 | `state_source_plugins` | 空 | 去哪些插件的 plugin_data 找状态（默认三个） |
@@ -447,6 +450,53 @@ async def download_file(source: str) -> bytes | None:
 
 真要彻底安全，就把「群聊记忆注入私聊」也关掉（那是记忆中枢的
 `visibility.allow_group_public_in_private`），两件事一起做才没有缝。
+
+---
+
+## 7.8 现画配图：说说配一张现画的图（0.14.0 起）
+
+**要解决的问题**：她想配的图不是表情包图库里那种，是「今天的海边」「我现在这个样子」——
+得现画一张。豆包出一张 20~60 秒，而 AstrBot 的工具调用有 **120 秒**硬上限，
+直接 await 会把工具掐掉（和豆包插件当初的 `async_paint` 同一个坑）。
+
+**链路**：
+
+```
+工具 qzone_mood_post / qzone_post_on_demand(illustration="画面描述")
+  → _apply_post(illustration=…)              解析冷却/攒批，决定现在发还是攒着
+  → _spawn_ai_post()                         后台任务，工具立刻返回「配图在画了」
+  → _ai_paint()                              调 astrbot_plugin_doubao_paint 的 _generate，
+                                             共用它的 _lock（同一时刻只画一张）
+  → _prepare_generated()                     1728×2304 PNG → 长边 1600 的 JPEG
+  → _publish(body, [jpg])                    带图发；失败自动退回纯文字
+  → context.send_message(umo, "说说发好了")   画完回一句
+```
+
+**几个关键决定**：
+
+| 决定 | 为什么 |
+|---|---|
+| 画图放后台任务 | 工具 120 秒上限；等画完再返回，模型那轮就被掐了 |
+| 跟豆包画画插件共用 `_lock` | 同一时刻只画一张，别两条说说同时抢豆包的输入框 |
+| 画不出来就发纯文字 | 图是锦上添花，说说本身不能丢（和表情包那条失败策略一致） |
+| 原图压成长边 1600 JPEG | 原图 4MB 左右，QQ空间上传接口容易失败；压完约 300KB |
+| 给了画面描述就不配表情包 | 一张图够了，两张图反而怪 |
+| 攒着的那条到点才画 | 冷却里可能攒好几天，提前画出来图会「过期」，也白占豆包 |
+
+**怎么验证（本机实测过的）**：
+
+1. 让她在 QQ 上发：「发条说说，配一张你在海边端着饭碗的画」
+   → 工具秒回「配图在画了」，约 30 秒后收到「说说发好了（配图画了 xx 秒）」，空间里那条带图。
+2. 日志关键字：`[QzoneKit] 配图画好了`、`配图压缩`、`说说先画配图再发`。
+3. 故意把豆包关掉再试一次 → 日志 `配图没画出来（…），改成纯文字发`，说说照样发出去。
+
+**踩过的坑**：
+
+- 豆包出的图是 **PNG 1728×2304**，直接传 QQ 空间经常失败或很慢，必须压。
+- 豆包没在前台/没预热时第一次要 60~90 秒，所以 `post_ai_image_timeout_seconds` 默认给到 200；
+  豆包画画插件开着 `prewarm_doubao` 的话，平时 20~30 秒就出图。
+- 豆包图右下角有水印（非会员去不掉），发出去就是这样，提前跟使用者说清楚。
+- 配图文件存在 `plugin_data/astrbot_plugin_qzone_kit/ai_*.jpg`，**只留 3 天**（超期自动清）。
 
 ---
 

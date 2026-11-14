@@ -93,7 +93,7 @@ AI 配置时先看一眼 `data/plugins/astrbot_plugin_private_companion/metadata
 | `qq_profile_update(field, value)` | 改资料：昵称 / 签名 / 状态 / 头像 | 「昵称改成泡泡」「状态换成摸鱼中」 |
 | `qzone_post_summary()` | 立刻发一条「今天的总结」（复用 QQ空间插件的写稿） | 「现在就发一条说说」 |
 | `qq_signature_maybe_change(text, importance)` | 她**自己想**换签名（受冷却管） | 不用人说，她自己会调 |
-| `qzone_mood_post(content, importance, sticker)` | 她**自己想**发说说（受冷却 + 攒批管） | 同上 |
+| `qzone_mood_post(content, importance, sticker, illustration)` | 她**自己想**发说说（受冷却 + 攒批管）；`illustration` 非空就现画一张配图 | 同上 |
 
 `date_text` 支持：`今天` `昨天` `前天` `大前天` `2026-11-03` `11-03` `11月3日`。
 
@@ -194,6 +194,9 @@ AI 配置时先看一眼 `data/plugins/astrbot_plugin_private_companion/metadata
 | `post_sticker_enabled` | false | 发说说带表情包（**需要你同意才开**）。来源：「表情包管理器」`meme_manager`（https://github.com/anka-afk/astrbot_plugin_meme_manager），用它**所有图包**的图；GIF 原样发（保动画），其它格式转静态 JPEG；带图失败自动退回纯文字 |
 | `post_sticker_keep_gif` | true | GIF 动图原样发；关掉就退回「一律转静态 JPEG」 |
 | `post_sticker_prob` | 0.75 | 开的时候多少比例带图 |
+| `post_ai_image_enabled` | true | **现画配图**：说说的画面描述交给「豆包画画」插件现画一张，画好再带图发（依赖 `astrbot_plugin_doubao_paint`，没装自动跳过） |
+| `post_ai_image_prob` | 0.7 | 自动发说说时，她说了想配画也按这个概率真画；她当场点名的不受限制 |
+| `post_ai_image_timeout_seconds` | 200 | 等豆包出图最多等几秒，超时就不配图、发纯文字 |
 | `dry_run` | false | 试运行：只判断、只记日志，不动真格 |
 | `test_force_post_once` | false | 【测试】下一轮无视判断，强制改签名 + 带图发一条（只生效一次） |
 
@@ -204,6 +207,30 @@ AI 配置时先看一眼 `data/plugins/astrbot_plugin_private_companion/metadata
 现在发之前会规整成：**≤40 帧 / 100ms 每帧（10fps）/ 最长边 360px / 128 色 / 透明铺白**，
 3.9MB 那种会变成 ~1MB。配置：`post_sticker_max_frames`、`post_sticker_frame_ms`、
 `post_sticker_max_px`、`post_sticker_colors`、`post_sticker_flatten`。
+
+## 说说配图：她自己现画一张（0.14.0 起）
+
+发说说的时候，她可以**自己想配一张图**——不是从表情包图包里挑，而是真的画一张：
+
+- 她把画面描述（画什么、什么动作、什么风格、什么光）交给 **「豆包画画」插件**（`astrbot_plugin_doubao_paint`），
+  豆包现画一张，**画好（约 20~60 秒）再带图发出去**。
+- 画图跑在**后台任务**里：工具一调用就返回「配图在画了」，不会被 AstrBot 的 120 秒工具超时掐掉；
+  画完会回一句「说说发好了」。
+- **画不出来就退回纯文字**（豆包没开、超时、出图失败都算），绝不会把这条说说丢掉。
+- 出的原图是 1728×2304 的 PNG（4MB 左右），发之前会压成**长边 1600 的 JPEG（约 300KB）**，上传稳一点。
+- 冷却里攒着的那条如果当时要配图，到点发车前才画（这个循环不急，等得起）。
+- 她说要配画时就不再配表情包了（一张图够了）；两套开关互不影响。
+
+开启与调参：
+
+| 键 | 默认 | 说明 |
+| --- | --- | --- |
+| `post_ai_image_enabled` | true | 总开关；没装豆包画画插件会自动跳过 |
+| `post_ai_image_prob` | 0.7 | **自动**发说说时，她说了想配画也只有 70% 会真画（省点时间）；她当场点名要配图的不受这个限制 |
+| `post_ai_image_timeout_seconds` | 200 | 等出图的上限，超时就不配图、发纯文字 |
+
+> 豆包没开也没关系：豆包画画插件会自己把它拉起来（最小化在任务栏里），第一次冷启动会慢些，
+> 之后预热着一般是 20~30 秒。豆包图右下角有水印（非会员），发出去就这样。
 
 ## 不用再装「QQ空间」「QQ资料管理」了
 

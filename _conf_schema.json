@@ -204,6 +204,21 @@
     "description": "上面那个开着时，多少比例的说说会带图（0~1，默认 0.75）。",
     "default": 0.75
   },
+  "post_ai_image_enabled": {
+    "type": "bool",
+    "description": "现画配图：发说说时她可以「自己想配一张画」，把画面描述交给「豆包画画」插件现画一张，画好（约一分钟）再带图发出去。画不出来就退回纯文字，不会丢说说。需要装 astrbot_plugin_doubao_paint；没装会自动跳过。",
+    "default": true
+  },
+  "post_ai_image_prob": {
+    "type": "float",
+    "description": "自动发说说时，她说了想配画也按这个概率真画（0~1，默认 0.7）。她当场点名的（工具调用）不受这个限制，说画就画。",
+    "default": 0.7
+  },
+  "post_ai_image_timeout_seconds": {
+    "type": "int",
+    "description": "等豆包出图最多等多少秒（默认 200）。等不到就不配图、直接发纯文字。冷启动第一次画可能要 60~90 秒，别调太小。",
+    "default": 200
+  },
   "test_force_post_once": {
     "type": "bool",
     "description": "【测试用】下一轮判断不管模型说发不发，都拿它写的正文真发一条（只生效一次，重启后若仍为 true 会再发一次）。平时请关掉。",
