@@ -51,6 +51,11 @@ from astrbot.api.event import AstrMessageEvent, MessageChain, filter
 from astrbot.api.message_components import Plain
 from astrbot.api.star import Context, Star, StarTools, register
 
+try:  # AstrBot 4.17+：往这一轮请求里临时塞一段说明（不进聊天历史）
+    from astrbot.core.agent.message import TextPart  # type: ignore
+except Exception:  # noqa: BLE001
+    TextPart = None  # type: ignore[assignment]
+
 try:  # 自带 QQ 空间客户端 / QQ 状态表（同目录模块）
     from .qq_status import STATUS_MAP, pick_status
     from .selfqzone import SelfQzoneService
@@ -64,7 +69,7 @@ except Exception:  # noqa: BLE001
     )
 
 PLUGIN_NAME = "astrbot_plugin_qzone_kit"
-PLUGIN_VERSION = "0.14.3"
+PLUGIN_VERSION = "0.14.4"
 
 QZONE_PLUGIN = "astrbot_plugin_qzone"
 QQPROFILE_STATUS = "astrbot_plugin_qqprofile"
@@ -1226,6 +1231,88 @@ class QzoneKitPlugin(Star):
         if any(no in text for no in self.POST_ASK_NO):
             return False
         return any(hint in text for hint in self.POST_ASK_HINTS)
+
+    def _qzone_status_text(self) -> str:
+        """给模型看的一小段「空间现状」：现在能不能发、该用哪个工具。
+
+        为什么要有这个：不发工具她也得答「现在能不能发」，而光靠历史上的工具结果，
+        她会拿着几十小时前的「冷却还有 57 小时」一直复读。这里每一轮都给她最新的。
+        """
+
+        last = self._post_last_ts()
+        now = time.time()
+        if last:
+            away_h = max(0.0, (now - last) / 3600.0)
+            when = f"{self._fmt_ts(last)}（{away_h:.1f} 小时前）"
+        else:
+            away_h = 9999.0
+            when = "（还没记过）"
+        min_days = max(0.0, float(self.post_min_days))
+        max_days = max(min_days, float(self.post_max_days))
+        if away_h >= max_days * 24:
+            pace = f"早就过了平时 {min_days:g}~{max_days:g} 天一条的节奏，放着不管她也会发"
+        elif away_h >= min_days * 24:
+            pace = f"已过最短冷却（{min_days:g} 天），在「随时可能发」的区间里"
+        else:
+            pace = (
+                f"平时 {min_days:g}~{max_days:g} 天一条，"
+                f"最短冷却还差 {min_days * 24 - away_h:.0f} 小时"
+            )
+        pending = self._fresh_fragments(self.state.get("post", {}).get("pending") or [])
+        return "\n".join(
+            [
+                "【QQ 空间：这一刻的真实情况（以这里为准，别凭记忆或旧工具结果答）】",
+                f"· 上次发说说：{when}｜现在攒着 {len(pending)} 段（到点会自动合成一条发）",
+                f"· 她自己想发的节奏：{pace}——这**只**决定「她自己想发」时攒不攒",
+                "· 老大让她发：什么时候都能发，不看上面那个节奏 → 调 qzone_post_on_demand"
+                "（无视冷却、立刻发，攒着的那些也一起发掉）",
+                "· 老大问「现在能不能发」：能。直接发，别答「不能发」「等冷却」。",
+            ],
+        )
+
+    @filter.on_llm_request()
+    async def inject_qzone_status(self, event: AstrMessageEvent, req: Any) -> None:
+        """每一轮都把「现在能不能发」塞给模型（临时内容，不进聊天历史）。"""
+
+        if TextPart is None:
+            return
+        try:
+            if not self._is_owner(event):
+                return
+        except Exception:  # noqa: BLE001
+            return
+        try:
+            text = self._qzone_status_text()
+            if self._owner_asked_to_post(event):
+                text += (
+                    "\n（老大这一句就是在让你发说说：别回「现在不能发」、也别再问一遍，"
+                    "直接调 qzone_post_on_demand 把它发出去。）"
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[QzoneKit] 生成空间状态说明失败：%s", exc)
+            return
+        try:
+            part = TextPart(text=text)
+            # 标成临时：只给这一轮看，不写进聊天记录
+            for attr in ("mark_as_temp", "make_as_temp"):
+                marker = getattr(part, attr, None)
+                if callable(marker):
+                    try:
+                        marked = marker()
+                        if marked is not None:
+                            part = marked
+                    except Exception:  # noqa: BLE001
+                        pass
+                    break
+            req.extra_user_content_parts.append(part)
+            if not getattr(self, "_inject_logged", False):
+                self._inject_logged = True
+                logger.info(
+                    "[QzoneKit] 每轮都会把「空间现状」带给模型（只打这一次日志）：%s",
+                    text.splitlines()[1][:60] if len(text.splitlines()) > 1 else text[:60],
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[QzoneKit] 空间状态没塞进请求：%s", exc)
 
     @filter.llm_tool(name="qzone_mood_post")
     async def qzone_mood_post(
