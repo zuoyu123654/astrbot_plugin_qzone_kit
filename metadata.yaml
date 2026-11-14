@@ -87,7 +87,7 @@ desc: >-
       还容易让她在无关话题里突然提空间。现在只在老大这条消息聊到发说说时才注入
       （命中「发说说/发个周记」这类指令，或消息里有 说说/空间/动态/冷却/配图 这些词）；
       普通聊天、问报错、让画图都不会带。
-version: 0.14.6
+version: 0.14.7
 author: paopao
 repo: https://github.com/zuoyu123654/astrbot_plugin_qzone_kit
 astrbot_version: ">=4.17.0"
