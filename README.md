@@ -165,6 +165,12 @@ AI 配置时先看一眼 `data/plugins/astrbot_plugin_private_companion/metadata
 - 半夜不拦：0 点以后她想发就发，只是**写的时候要跟现在的时间对得上**——
   合成说说时会把【现在时间】（含时段称呼）喂给模型，凌晨写的碎片到了别的时间发，会顺着改成那时的说法。
 - 老大**点名**让她发（`qzone_post_on_demand` / 手动发总结）不受这个限制，说发就发。
+- **每天总结不算她「自己发的那条」**：发完只记 `post.daily_at`，不重置她的发说说冷却，
+  也不把攒着的碎片并进去。以前两边混着记，每天 23:00 一总结就把冷却重新计时、
+  把攒了几天的碎片吞进总结里，于是空间天天只剩 23 点那一条。
+- **总结只拿今天的素材**：`_compose_summary` 按日期过滤聊天记录（只看今天），
+  提示词里也要求旧事按远近说——「昨天」「前天」可以，再早的只说「之前」「前几天」，
+  不许写具体日期/几号/星期几，更不许混进今天；今天没聊就写此刻的心情。
 
 ## 没开机 / 错过了怎么办
 
@@ -335,7 +341,8 @@ AI 配置时先看一眼 `data/plugins/astrbot_plugin_private_companion/metadata
 `data/plugin_data/astrbot_plugin_qzone_kit/state.json`
 
 - `signature.last_at / last_text / pending`（上次改的时间、内容、待换的）
-- `post.last_at / pending / pending_due`（上次发的时间、攒着的、到点时间）
+- `post.last_at / pending / pending_due`（上次**她自己**发的时间、攒着的、到点时间）
+- `post.daily_at`（上次「每天那条总结」的时间；它不参与她自己的冷却）
 - `recent`（最近聊天，判断材料）
 
 删掉它 = 重置所有冷却和待发。

@@ -1028,7 +1028,7 @@ class QzoneKitPlugin(Star):
                 logger.error("[QzoneKit] 手动发总结失败：%s", exc)
                 return f"发失败了：{exc}"
             if ok:
-                self._mark_post("manual")
+                self._mark_post("manual", daily=True)
                 return "发了，去空间看看"
             return "没发出去（素材或接口出问题了，看日志）"
 
@@ -1036,11 +1036,14 @@ class QzoneKitPlugin(Star):
         text = await self._compose_summary()
         if not text:
             return "没写成：模型没给正文（或者还没有素材）"
-        result = await self._apply_post(
-            text, "important", "每天总结（自带客户端）", self._guess_category(text), force=True
+        return await self._apply_post(
+            text,
+            "important",
+            "每天总结（自带客户端）",
+            self._guess_category(text),
+            force=True,
+            daily=True,
         )
-        self._mark_post("manual")
-        return result
 
     # ── 工具：QQ 资料与状态（并自 qqprofile）────────────────────────
     @filter.llm_tool(name="qq_set_status")
@@ -1960,8 +1963,21 @@ class QzoneKitPlugin(Star):
     def _post_last_ts(self) -> float:
         return float(self.state.get("post", {}).get("last_at") or 0)
 
-    def _mark_post(self, source: str) -> None:
+    def _mark_post(self, source: str, daily: bool = False) -> None:
+        """记一笔「发过说说了」。
+
+        daily=True 表示「每天那条总结」——它是另一条线，不算她自己发的那条：
+        不能重置她自己的冷却，也不能把攒着的那批吞掉。
+        以前这里不分，结果每天 23:00 一总结，冷却就被重新计时，
+        她攒的碎片也全被并进总结里，于是空间天天只有 23 点那一条。
+        """
+
         post = self.state.setdefault("post", {})
+        if daily:
+            post["daily_at"] = time.time()
+            post["daily_source"] = source
+            self._save_state()
+            return
         post["last_at"] = time.time()
         post["source"] = source
         post.pop("pending", None)
@@ -2357,19 +2373,29 @@ class QzoneKitPlugin(Star):
         """用本插件自己的素材写一条「今天的总结」（没装 QQ空间插件时用）。"""
 
         try:
-            material = await self._recent_block()
+            material = await self._recent_block(today_only=True)
             state = await self._state_block()
             now_block = self._now_block()
         except Exception as exc:  # noqa: BLE001
             logger.warning("[QzoneKit] 组装总结素材失败：%s", exc)
             material, state, now_block = "", "", ""
 
+        today_txt = datetime.now().strftime("%Y-%m-%d")
         prompt = (
-            "写一条今天的小结发到 QQ 空间：把今天发生的事、自己的感受串起来，"
-            "第一人称、日常口语，具体一点，别写成流水账。\n"
+            f"写一条今天（{today_txt}）的小结发到 QQ 空间："
+            "把**今天**发生的事、自己的感受串起来，第一人称、日常口语，具体一点，别写成流水账。\n"
+            "【日期必须对得上】素材每条前面都标着「月-日 时:分」，"
+            f"只有今天（{today_txt}）那些才算「今天」。\n"
+            "标着更早日期的、或者对话里人说的是昨天/前天的，都不能写成今天干的；"
+            "真要提，就按远近说：「昨天」「前天」可以说；再早的一律说「之前」「前几天」，"
+            "**不许写具体日期、几号、星期几**。拿不准是哪天就干脆不提。"
+            "**不许把旧事混进今天里。**\n"
+            "今天实在没什么事，就写此刻的状态和心情，别拿旧事凑数。\n"
             "分 2~3 段，每段 30~150 字，段与段之间空一行；别堆比喻和生僻词。\n"
             "只输出正文，不要标题/引号/解释。\n\n"
-            f"【现在时间】{now_block}\n\n【她的状态】\n{state}\n\n【最近聊天素材】\n{material}"
+            f"【现在时间】{now_block}\n\n"
+            "【她的状态】（日记、梦境、日程里带日期的也是旧事，同样按上面的规矩来）\n"
+            f"{state}\n\n【今天的聊天素材】\n{material}"
         )
         try:
             text = (await self._llm(prompt)).strip()
@@ -2449,6 +2475,7 @@ class QzoneKitPlugin(Star):
                         "每天总结（自带客户端）",
                         self._guess_category(text),
                         force=True,
+                        daily=True,
                     )
                     logger.info("[QzoneKit] 自带客户端：每天总结已发")
             except Exception as exc:  # noqa: BLE001
@@ -2469,7 +2496,9 @@ class QzoneKitPlugin(Star):
         """这条说说会不会泄露别人的隐私？返回原因，空串表示干净。"""
         return privacy_violation(text, self.state.get("recent") or [], self._privacy_guard_on())
 
-    async def _publish(self, text: str, images: list[str] | None = None) -> tuple[bool, str]:
+    async def _publish(
+        self, text: str, images: list[str] | None = None, daily: bool = False
+    ) -> tuple[bool, str]:
         bad = self._privacy_violation(text)
         if bad:
             logger.warning(
@@ -2486,7 +2515,7 @@ class QzoneKitPlugin(Star):
                 if not img_paths:
                     logger.warning("[QzoneKit] 没有可用的图片文件，改成纯文字发")
                     await service.publish_post(text=text)
-                    self._mark_post("auto")
+                    self._mark_post("auto", daily=daily)
                     return True, ""
                 images = img_paths
                 try:
@@ -2504,7 +2533,7 @@ class QzoneKitPlugin(Star):
         except Exception as exc:  # noqa: BLE001
             logger.error("[QzoneKit] 发说说失败：%s", exc)
             return False, str(exc)
-        self._mark_post("auto")
+        self._mark_post("auto", daily=daily)
         logger.info("[QzoneKit] 说说已发（%s 字）：%s", len(text), text[:60])
         return True, ""
 
@@ -2741,6 +2770,7 @@ class QzoneKitPlugin(Star):
         illustration: str = "",
         umo: str = "",
         self_portrait: bool = False,
+        daily: bool = False,
     ) -> str:
         """发一条说说：管冷却、攒批、配图（表情包 / 现画）。
 
@@ -2748,10 +2778,26 @@ class QzoneKitPlugin(Star):
         先让豆包画，画好再带图发，工具这边立刻返回，不会被 120 秒的超时掐掉。
         现画和表情包**二选一**：有画面描述就不配表情包了；现画失败才退回表情包。
         self_portrait = 画面里是她自己（会带角色参考图）。
+        daily = 这是「每天那条总结」，不算她自己发的那条：不看冷却、不动攒着的碎片。
         """
 
         illustration = str(illustration or "").strip()[:300]
         text = self._format_post(text)
+
+        if daily:
+            # 每天总结单独一条：不占她的冷却，也不把攒了几天的碎片并进来。
+            # （以前这两件事混在一起，所以空间天天只有 23 点这一条，旧事也被塞进总结里。）
+            if self.dry_run:
+                logger.info(
+                    "[QzoneKit][试运行] 本来要发每天总结（%s 字）：%s", len(text), text
+                )
+                return f"[试运行] 本来要发每天总结：{text[:60]}…"
+            img = self._pick_sticker(sticker or "")
+            ok, err = await self._publish(text, [img] if img else None, daily=True)
+            if not ok:
+                return f"发说说没成功：{err}"
+            return "发了，去空间看看"
+
         now = time.time()
         last = self._post_last_ts()
         need = self._post_cooldown(importance)
@@ -3709,12 +3755,24 @@ class QzoneKitPlugin(Star):
             parts.append("陪伴面板/其他插件里的状态（只读）：" + "；".join(hits))
         return "\n".join(parts) if parts else "（没读到外部状态）"
 
-    async def _recent_block(self) -> str:
+    async def _recent_block(self, today_only: bool = False) -> str:
         recent = self.state.get("recent") or []
         # 群聊可以用来当素材（群里的气氛本身也是她的生活），但必须标出来源：
         # 不标的话模型分不清，会把群友的话当成「老大最近聊的事」写进说说。
         if not getattr(self, "judge_include_group", True):
             recent = [x for x in recent if int(x.get("g") or 0) == 0]
+        header = ""
+        if today_only:
+            # 写「今天的总结」只能拿今天的素材。以前是取最近 30 条，
+            # 那 30 条经常横跨两三天，模型就把昨天的事当今天写出来了。
+            today = datetime.now().date()
+            same = [x for x in recent if ts_to_day(x.get("at")) == today]
+            if same:
+                recent = same
+            else:
+                cutoff = time.time() - 3 * 86400.0
+                recent = [x for x in recent if float(x.get("at") or 0) >= cutoff]
+                header = "（提醒：今天几乎没聊天，下面这些是之前几天的，不是今天的）\n"
         if not recent:
             return "（最近没有聊天）"
         lines = []
@@ -3725,7 +3783,7 @@ class QzoneKitPlugin(Star):
                 ts = "?"
             kind = "群聊·群友" if int(item.get("g") or 0) == 1 else "私聊"
             lines.append(f"[{ts}]（{kind}）{item.get('who', '')}: {item.get('text', '')}")
-        return "\n".join(lines)
+        return header + "\n".join(lines)
 
     async def _llm(self, prompt: str) -> str:
         provider = self.judge_provider or None
